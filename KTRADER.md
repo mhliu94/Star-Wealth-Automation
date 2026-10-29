@@ -164,7 +164,7 @@ refresh finishes, and shortly after commands (two-second refresh delay).
 serialized client/profile lock as trading.
 
 `account-details` uses key `STAR-DONG` and includes account number `24`, USD cash,
-native per-currency cash, US positions, available share quantities, average cost,
+native per-currency cash, US positions, available share quantities, broker-reported per-share cost,
 the persisted trading-enabled flag and observation timestamp. Cash comes from
 `AssetSummary.assetsBreakdown[currency].availableBalance`, verified in the
 broker's own asset UI. Converted total assets and margin purchasing power are
@@ -217,14 +217,21 @@ Tests use fake brokers and Kafka consumers:
 ```
 
 Preparation checks on 2026-10-29: local live-mode configuration, shell syntax,
-broker login and trading renewal, native cash normalization, complete empty
+broker login and trading renewal, native cash normalization, populated
 holdings/order-history reads, and overnight AAPL limit preparation passed.
 Offline tests cover FOK recovery/partial fills/cancel races, bulk cancellation,
 order/holding schemas, durable reporting, failed sends and restart behavior.
-All 456 tests passed. Kafka metadata confirmed `trading-commands`,
-`account-details` and `order-status` exist. Live account-snapshot publication
-is awaiting explicit approval; no financial report has been published by setup.
-The account currently has no populated orders/holdings, so native nonempty
-responses and live financial submission/cancellation remain unexercised. No
-financial writes were sent and no trading consumer group was joined. The
-operator starts the listener manually.
+All 469 tests passed. Kafka metadata confirmed `trading-commands`,
+`account-details` and `order-status` exist. An explicitly approved account
+snapshot containing stock positions was published and read back byte-for-byte
+at the acknowledged Kafka offset. No financial writes were sent and no trading
+consumer group was joined. Live submission/cancellation remains unexercised;
+the operator starts the listener manually.
+
+The native list endpoints require lowercase `market: ["us"]`. Uppercase `US`
+silently returns an empty list and must not be used for holdings or order reads.
+Live comparison against an unfiltered request verified this distinction. Native
+holdings use `cost` and `sellAble`; the OpenAPI wrapper uses `avgCost` and
+`sellable`. The adapter handles both and rejects conflicting aliases. Regression
+tests model case-sensitive server behavior and verify that populated native
+holdings survive through the Kafka snapshot payload.

@@ -112,7 +112,7 @@ def run(args):
         if args.command == "assets":
             return client.read("assets", client.account_params())
         if args.command == "holdings":
-            return client.read("holdings", {**client.account_params(), "start": 0, "count": 100, "market": ["US"]})
+            return client.read("holdings", {**client.account_params(), "start": 0, "count": 100, "market": ["us"]})
         if args.command == "quote":
             return client.quote(args.symbol)
         if args.command == "quote-check":

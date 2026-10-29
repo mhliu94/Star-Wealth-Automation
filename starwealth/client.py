@@ -40,7 +40,7 @@ class Client:
 
     def orders(self, date=None, start=0, count=100):
         date = date or datetime.now(ZoneInfo("America/New_York")).date().isoformat()
-        return self.read("orders", {**self.account_params(), "market": ["US"], "fromDate": date,
+        return self.read("orders", {**self.account_params(), "market": ["us"], "fromDate": date,
                      "toDate": date, "start": start, "count": count, "sortBy": "createTime", "sort": "desc"})
 
     def asset_summary(self):
@@ -49,7 +49,7 @@ class Client:
 
     def holdings(self, *, page_size=100, max_pages=1000):
         """Return every US holding, or fail if pagination cannot be verified."""
-        return self._read_pages("holdings", {**self.account_params(), "market": ["US"]},
+        return self._read_pages("holdings", {**self.account_params(), "market": ["us"]},
                                 page_size=page_size, max_pages=max_pages)
 
     def order_history(self, *, lookback_days=90, from_date=None, to_date=None,
@@ -64,7 +64,7 @@ class Client:
             raise ValueError("Order history requires valid ISO calendar dates") from exc
         if start > end:
             raise ValueError("from_date must not follow to_date")
-        params = {**self.account_params(), "market": ["US"], "fromDate": start.isoformat(),
+        params = {**self.account_params(), "market": ["us"], "fromDate": start.isoformat(),
                   "toDate": end.isoformat(), "sortBy": "createTime", "sort": "asc"}
         if stock_code is not None:
             params["stockCode"] = symbol(stock_code)

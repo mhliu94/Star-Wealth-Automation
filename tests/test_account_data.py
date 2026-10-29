@@ -134,7 +134,7 @@ def test_orders_range_and_statuses_apply_to_every_page(state):
         assert params["toDate"] == "2026-10-29"
         assert params["statusArr"] == [40, 60]
         assert params["stockCode"] == "AAPL"
-        assert params["market"] == ["US"]
+        assert params["market"] == ["us"]
 
 
 def test_default_lookback_includes_90_calendar_days(state):

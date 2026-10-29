@@ -2,8 +2,8 @@
 
 Cash: the broker's public commonOutsideRouter.85ee2948.js labels the native
 assetsBreakdown[currency].availableBalance as cash. assetsSummary contains FX
-converted totals. Holdings fields follow fosunwealth/fw-trading's Holdings.md;
-the native response must match those fields before a position is published.
+converted totals. Native Holdings v6 uses cost/sellAble; the public OpenAPI
+counterpart calls these avgCost/sellable. Both require explicit typed values.
 """
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
@@ -44,7 +44,7 @@ def cash_balances(response):
     return balances
 
 
-def normalize_holdings(rows):
+def normalize_holdings(rows, *, sub_account_id=None):
     """Normalize the documented US-equity position fields, rejecting schema changes."""
     if not isinstance(rows, list):
         raise ProtocolError("Holdings must be a complete list")
@@ -52,6 +52,8 @@ def normalize_holdings(rows):
     for row in rows:
         if not isinstance(row, dict):
             raise ProtocolError("Invalid holding record")
+        if sub_account_id is not None and row.get("subAccountId") != sub_account_id:
+            raise ProtocolError("Holding account route mismatch")
         market = row.get("marketCode")
         if not isinstance(market, str) or market.upper() != "US":
             raise ProtocolError("US holdings query returned an unverified market")
@@ -67,14 +69,20 @@ def normalize_holdings(rows):
             raise ProtocolError("US holding currency does not match")
         quantity = finite_number(row.get("quantity"), "holding quantity")
         available = finite_number(row.get("quantityAvail"), "available quantity")
-        average = finite_number(row.get("avgCost"), "average cost")
-        if type(row.get("sellable")) is not bool:
+        cost_fields = [finite_number(row[key], "average cost") for key in ("cost", "avgCost") if key in row]
+        if not cost_fields or any(value != cost_fields[0] for value in cost_fields):
+            raise ProtocolError("Holding average cost is missing or conflicting")
+        average = cost_fields[0]
+        sell_fields = [row[key] for key in ("sellAble", "sellable") if key in row]
+        if not sell_fields or any(type(value) is not bool for value in sell_fields):
             raise ProtocolError("Holding sellable flag is missing or invalid")
+        if any(value != sell_fields[0] for value in sell_fields):
+            raise ProtocolError("Holding sellable flags conflict")
         if available < 0 or average < 0 or (quantity >= 0 and available > quantity):
             raise ProtocolError("Holding quantities or cost are inconsistent")
         if quantity != 0:
             positions.append({"symbol": stock, "qty": quantity, "avg_price": average,
-                              "available_qty": available if row["sellable"] else 0.0})
+                              "available_qty": available if sell_fields[0] else 0.0})
     return positions
 
 
@@ -89,7 +97,9 @@ def account_snapshot(client, account_id, account_num_id, trading_enabled):
     cash = cash_balances(client.asset_summary())
     if "USD" not in cash:
         raise ProtocolError("Asset summary has no confirmed USD cash balance")
-    positions = normalize_holdings(client.holdings())
+    state = getattr(client, "state", None)
+    sub_account_id = state["account"]["subAcctId"] if isinstance(state, dict) else None
+    positions = normalize_holdings(client.holdings(), sub_account_id=sub_account_id)
     return {"account_id": account_id, "account_num_id": account_num_id,
             "cash": cash["USD"], "cash_by_currency": cash, "positions": positions,
             "ts": datetime.now(timezone.utc).isoformat(), "trading_enabled": trading_enabled}
