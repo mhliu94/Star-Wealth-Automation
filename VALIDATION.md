@@ -35,6 +35,8 @@ extend_trade -> success
 
 The final read-only smoke check is saved in `validation-live.json`. Its verifier explicitly rejected any attempt to call create/cancel.
 
+The portable credential bundle was separately checked after removing all cached sessions. Fresh identity lookup, password login, account metadata refresh, order-list read, trading-password unlock, and trading-session renewal passed. See `validation-portability.json`. This check ran on Windows Python; the target Linux host has not been tested. The bundle itself is private and excluded from the repository.
+
 ## Quote freshness
 
 Three AAPL overnight samples at 21:01:03–21:01:06 Eastern had both delay flags false and bid/ask ages of 5.811, 3.543, and 1.393 seconds. The first falls outside the client's five-second threshold; the next two pass. The evidence is in `validation-quotes.json`.

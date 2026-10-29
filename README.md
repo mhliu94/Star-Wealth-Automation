@@ -6,6 +6,8 @@ An emulator-free Python client for the Star Wealth account configured on this wo
 
 Derived from Star Wealth Android 5.1.2. The [Fangde project](https://github.com/mhliu94/Fangde-Automation) supplied the workflow reference; this is a separate protocol implementation.
 
+For Linux with the separately supplied private credential bundle, follow [LINUX.md](LINUX.md). The private bundle is never included in this repository or the source ZIP.
+
 ## Run on this workstation
 
 Open PowerShell in this folder. The launcher already points to the configured private profile and password material:

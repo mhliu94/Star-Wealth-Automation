@@ -1,0 +1,16 @@
+{
+  "fresh_login_from_bundle": "passed",
+  "order_list_read": "passed",
+  "trading_password_unlock": "passed",
+  "trading_session_renewal": "passed",
+  "operations": [
+    "lookup",
+    "login",
+    "user_info",
+    "orders",
+    "unlock",
+    "extend_trade"
+  ],
+  "financial_writes_sent": 0,
+  "verification_host": "Windows Python; Linux instructions supplied separately"
+}
