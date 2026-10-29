@@ -1,0 +1,30 @@
+{
+  "checked_at_utc": "2026-10-29T00:57:07.116553+00:00",
+  "financial_writes_sent": 0,
+  "account_read": "passed",
+  "trading_unlock_or_renewal": "passed",
+  "assets_and_holdings": "passed",
+  "broker_market_status": "NIGHT",
+  "explicit_limit_dry_run": {
+    "result": "passed",
+    "session": "overnight",
+    "orderType": 3,
+    "timeInForce": 4,
+    "expType": 1
+  },
+  "readonly_bidask_preflight": "passed",
+  "marketable_limit_dry_run": "passed",
+  "operations": [
+    "orders",
+    "extend_trade",
+    "assets",
+    "holdings",
+    "market_status",
+    "market_status",
+    "quote",
+    "bid_ask",
+    "market_status",
+    "quote"
+  ],
+  "credentials_available": true
+}

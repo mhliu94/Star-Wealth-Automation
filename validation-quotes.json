@@ -1,0 +1,36 @@
+{
+  "samples": [
+    {
+      "received_at_utc": "2026-10-29T01:01:03.265659+00:00",
+      "request_duration_ms": 593,
+      "symbol": "AAPL",
+      "broker_market_status": "NIGHT",
+      "quote_delay_flag": false,
+      "response_delay_flag": false,
+      "book_age_seconds": 5.811,
+      "regular_last_trade_age_seconds": 18061.844
+    },
+    {
+      "received_at_utc": "2026-10-29T01:01:04.769523+00:00",
+      "request_duration_ms": 500,
+      "symbol": "AAPL",
+      "broker_market_status": "NIGHT",
+      "quote_delay_flag": false,
+      "response_delay_flag": false,
+      "book_age_seconds": 3.543,
+      "regular_last_trade_age_seconds": 18063.348
+    },
+    {
+      "received_at_utc": "2026-10-29T01:01:06.242674+00:00",
+      "request_duration_ms": 469,
+      "symbol": "AAPL",
+      "broker_market_status": "NIGHT",
+      "quote_delay_flag": false,
+      "response_delay_flag": false,
+      "book_age_seconds": 1.393,
+      "regular_last_trade_age_seconds": 18064.821
+    }
+  ],
+  "financial_writes_sent": 0,
+  "scope": "AAPL overnight on the configured account; not proof of every symbol or session entitlement"
+}

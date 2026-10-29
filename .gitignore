@@ -1,3 +1,24 @@
+.venv/
+__pycache__/
+.pytest_cache/
+*.egg-info/
+*.db*
+*.sqlite3*
+*.lock
+*.session.json
+*.credentials.json
+.state/
+build/
+dist/
+
+# Private account bundles and local password inputs
+*private*.tar.gz
+*.credentials.*
+credentials.txt
+.private/
+private/
+
+# Existing repository Python ignore rules
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
@@ -218,3 +239,5 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+
