@@ -88,8 +88,7 @@ def test_invalid_order_rejected_before_broker_reads(journal, changes):
     assert broker.submitted == []
 
 
-@pytest.mark.parametrize("kind", ["LIMIT_ORDER_FOK", "CURRENCY_CONVERSION", "START_ALGO_TRADING",
-                                  "STOP_ALGO_TRADING", "CANCEL_OPEN_ORDERS"])
+@pytest.mark.parametrize("kind", ["CURRENCY_CONVERSION", "START_ALGO_TRADING", "STOP_ALGO_TRADING"])
 def test_unsupported_commands_cannot_degrade_to_regular_orders(journal, kind):
     broker = Broker()
     with pytest.raises(ValueError, match="Unsupported"):
@@ -152,7 +151,9 @@ def test_live_redelivery_cannot_resubmit_even_after_adapter_restart(journal):
     broker = Broker()
     first = BrokerAdapter(broker, journal, live=True).execute(command())
     assert first["state"] == "acknowledged"
-    assert "private" not in str(first)
+    assert first["order_id"] == "private-order"
+    assert "private-account" not in str(first)
+    assert "private-session" not in str(first)
     reads = broker.reads
     with pytest.raises(DuplicateIntent):
         BrokerAdapter(broker, journal, live=True).execute(command())

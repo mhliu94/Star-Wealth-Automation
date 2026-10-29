@@ -1,8 +1,8 @@
-from datetime import datetime
+from datetime import date, datetime, timedelta
 import time
 from zoneinfo import ZoneInfo
 from .auth import Auth
-from .errors import AuthenticationRequired, BrokerError, USER_SESSION_ERRORS, TRADE_SESSION_ERRORS, OutcomeUnknown
+from .errors import AuthenticationRequired, BrokerError, USER_SESSION_ERRORS, TRADE_SESSION_ERRORS, OutcomeUnknown, ProtocolError
 from .orders import Order, StaleQuoteError, build_order, symbol
 from .quotes import freshness_report
 from .storage import load_private, save_private
@@ -27,7 +27,7 @@ class Client:
                 "accountId": a["acctId"], "subAccountId": a["subAcctId"]}
 
     def read(self, operation, params):
-        if operation not in {"orders", "holdings", "assets", "bid_ask", "detail", "user_info", "market_status", "quote"}:
+        if operation not in {"orders", "holdings", "assets", "asset_summary", "bid_ask", "detail", "user_info", "market_status", "quote"}:
             raise ValueError("Not a read operation")
         self.auth.ensure_user()
         for attempt in range(2):
@@ -42,6 +42,87 @@ class Client:
         date = date or datetime.now(ZoneInfo("America/New_York")).date().isoformat()
         return self.read("orders", {**self.account_params(), "market": ["US"], "fromDate": date,
                      "toDate": date, "start": start, "count": count, "sortBy": "createTime", "sort": "desc"})
+
+    def asset_summary(self):
+        """Native currency cash breakdown, unlike TotalAssets' converted totals."""
+        return self.read("asset_summary", self.account_params())
+
+    def holdings(self, *, page_size=100, max_pages=1000):
+        """Return every US holding, or fail if pagination cannot be verified."""
+        return self._read_pages("holdings", {**self.account_params(), "market": ["US"]},
+                                page_size=page_size, max_pages=max_pages)
+
+    def order_history(self, *, lookback_days=90, from_date=None, to_date=None,
+                      statuses=None, stock_code=None, page_size=100, max_pages=1000):
+        """Read a complete, bounded date range; the default includes today and 89 prior days."""
+        if type(lookback_days) is not int or lookback_days < 1:
+            raise ValueError("lookback_days must be a positive integer")
+        try:
+            end = date.fromisoformat(to_date) if to_date is not None else datetime.now(ZoneInfo("America/New_York")).date()
+            start = date.fromisoformat(from_date) if from_date is not None else end - timedelta(days=lookback_days - 1)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("Order history requires valid ISO calendar dates") from exc
+        if start > end:
+            raise ValueError("from_date must not follow to_date")
+        params = {**self.account_params(), "market": ["US"], "fromDate": start.isoformat(),
+                  "toDate": end.isoformat(), "sortBy": "createTime", "sort": "asc"}
+        if stock_code is not None:
+            params["stockCode"] = symbol(stock_code)
+        if statuses is not None:
+            allowed = {10, 20, 21, 40, 50, 60, 70, 80, 90, 100}
+            if (not isinstance(statuses, (list, tuple)) or not statuses
+                    or any(type(value) is not int or value not in allowed for value in statuses)):
+                raise ValueError("statuses must contain supported integer order states")
+            params["statusArr"] = list(statuses)
+        return self._read_pages("orders", params, page_size=page_size, max_pages=max_pages)
+
+    def _read_pages(self, operation, params, *, page_size, max_pages):
+        if type(page_size) is not int or not 1 <= page_size <= 100:
+            raise ValueError("page_size must be between 1 and 100")
+        if type(max_pages) is not int or max_pages < 1:
+            raise ValueError("max_pages must be a positive integer")
+        records, seen = [], set()
+        expected_total = None
+        for _ in range(max_pages):
+            offset = len(records)
+            page = self.read(operation, {**params, "start": offset, "count": page_size})
+            if not isinstance(page, dict):
+                raise ProtocolError("Account pagination response must be an object")
+            start, count, total = (page.get(key) for key in ("start", "count", "total"))
+            if any(type(value) is not int or value < 0 for value in (start, count, total)):
+                raise ProtocolError("Account pagination metadata is missing or invalid")
+            if start != offset or count > page_size:
+                raise ProtocolError("Account pagination metadata is inconsistent")
+            if expected_total is not None and total != expected_total:
+                raise ProtocolError("Account records changed during pagination; refresh the snapshot")
+            expected_total = total
+            if "list" not in page:
+                raise ProtocolError("Account page has no record list")
+            batch = page["list"]
+            if batch is None and total == 0:
+                batch = []
+            # Native endpoints echo the requested capacity in count; the public
+            # OpenAPI wrapper documents count as the number actually returned.
+            # Both shapes are verified. Advance and bound using actual records.
+            if (not isinstance(batch, list) or count not in (page_size, len(batch))
+                    or len(batch) > count or start + len(batch) > total):
+                raise ProtocolError("Account page count does not match its records")
+            for row in batch:
+                if not isinstance(row, dict):
+                    raise ProtocolError("Account page contains a malformed record")
+                fields = ("orderId",) if operation == "orders" else ("marketCode", "stockCode")
+                identity = tuple(row.get(key) for key in fields)
+                if any(not isinstance(value, str) or not value.strip() for value in identity):
+                    raise ProtocolError("Account page record identity is missing")
+                if identity in seen:
+                    raise ProtocolError("Account pagination repeated a record; refresh the snapshot")
+                seen.add(identity)
+            records.extend(batch)
+            if len(records) == total:
+                return records
+            if not batch:
+                raise ProtocolError("Account pagination stopped before returning every record")
+        raise ProtocolError("Account pagination exceeded max_pages; no partial snapshot returned")
 
     def bid_ask(self, symbol, order_type=3, session=2, direction=1):
         params = {**self.account_params(), "marketCode": "US", "stockCode": symbol,

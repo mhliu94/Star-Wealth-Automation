@@ -17,6 +17,7 @@ Requests use an allowlisted host/path registry, verified TLS, and JSON-RPC reque
 | Trading renewal | uapi.fosunhanig.com | /uc/v1/Session2Extend | Trade |
 | Orders | tapi.fosunhanig.com | /trade/v5/OrderList | User |
 | Assets | tapi.fosunhanig.com | /portfolio/v6/TotalAssets | User |
+| Native cash breakdown | tapi.fosunhanig.com | /portfolio/v3/AssetSummary | User |
 | Holdings | tapi.fosunhanig.com | /portfolio/v6/Holdings | User |
 | Buying-power info | tapi.fosunhanig.com | /trade/v6/BidAskInfo | User |
 | Create order | tapi.fosunhanig.com | /trade/v4/OrderCreate | Trade; not live tested |
@@ -63,3 +64,13 @@ Quote evidence is separate from execution evidence: live NIGHT responses contain
 Known user-session errors are 100008, 100031, and 100034; known trading-session errors are 100030 and 100032. The actual competing-login test observed 100034. Password/lock-state codes 110011, 110012, 110013, 110019, and 220001 pause further automatic authentication. Unknown authentication failures receive a bounded cooldown instead of a password loop.
 
 Financial writes have a durable local intent journal. Only explicit authentication rejection permits one rebuilt attempt. Request IDs are not assumed to provide broker idempotency. Network uncertainty leaves the intent unknown/pending for reconciliation; it does not justify another financial write.
+
+## KTrader reporting and cancellation models
+
+Native cash mapping is verified by the broker's [asset UI bundle](https://cdn.mfosunhani.com/fe/h5-wealth/default/js/commonOutsideRouter.85ee2948.js): `assetsBreakdown[currency].availableBalance` is labelled cash. The live endpoint returned native HKD/USD/CNH entries; `assetsSummary` is FX-converted and is not used for per-currency reporting.
+
+Fosun's published [OrderList model](https://github.com/fosunwealth/fw-trading/blob/157c52fda8387c2ae658bb2010060df75d269f07/fosun_skills/fosun-trading/doc/OrderList.md) supplies explicit `canCancel` integer 0/1 and states: 10/20/21 pending, 40 reported, 50 filled, 60 partial fill, 70 canceled, 80 partial canceled, 90 rejected, 100 expired. These OpenAPI counterpart models are accepted only when native response fields/types and selected subaccount match; no status is inferred from missing orders. Unknown states report UNKNOWN and are not canceled. The [Holdings model](https://github.com/fosunwealth/fw-trading/blob/157c52fda8387c2ae658bb2010060df75d269f07/fosun_skills/fosun-trading/doc/Holdings.md) defines quantity, quantityAvail, avgCost and sellable.
+
+Native pagination differs from the public wrapper: live native responses echo requested `count=100` even when `total=0`; empty holdings have `list=[]`, empty orders `list=null`. Pagination advances using actual rows, validates totals and rejects incomplete or duplicated pages. A source mismatch is an explicit reporting/cancellation error, never a fabricated zero balance or successful cancellation.
+
+KTrader FOK uses the requested [GigaMoney synthetic behavior](https://github.com/mhliu94/GigaMoney-Automation-Linux/blob/74a37b7871cbf6ce5b180615aff1d1a9566e99c8/gigamoney/api_trading.py): ordinary limit followed by remainder cancellation and broker-state confirmation. No new native FOK order type is claimed. Durable FOK state and the financial journal distinguish unsent cancellation from uncertain sent cancellation across restart.

@@ -18,6 +18,7 @@ OPERATIONS = {
     "orders": (TRADE_HOST, "/trade/v5/OrderList", "user"),
     "holdings": (TRADE_HOST, "/portfolio/v6/Holdings", "user"),
     "assets": (TRADE_HOST, "/portfolio/v6/TotalAssets", "user"),
+    "asset_summary": (TRADE_HOST, "/portfolio/v3/AssetSummary", "user"),
     "bid_ask": (TRADE_HOST, "/trade/v6/BidAskInfo", "user"),
     "create": (TRADE_HOST, "/trade/v4/OrderCreate", "trade"),
     "cancel": (TRADE_HOST, "/trade/v4/OrderCancel", "trade"),

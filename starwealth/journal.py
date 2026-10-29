@@ -20,10 +20,40 @@ class Journal:
         self.db.execute("""CREATE TABLE IF NOT EXISTS attempts (
             intent TEXT NOT NULL, request_id TEXT PRIMARY KEY, params TEXT NOT NULL,
             created REAL NOT NULL, auth_rejection INTEGER)""")
+        self.db.execute("""CREATE TABLE IF NOT EXISTS command_metadata (
+            intent TEXT PRIMARY KEY, command_id TEXT NOT NULL, client_order_id TEXT)""")
         self.db.commit()
 
     def close(self):
         self.db.close()
+
+    def associate(self, intent, command_id, client_order_id=None):
+        """Save command attribution before submission, including across a crash."""
+        with self.db:
+            row = self.db.execute("SELECT command_id,client_order_id FROM command_metadata WHERE intent=?", (intent,)).fetchone()
+            if row and row != (command_id, client_order_id):
+                raise DuplicateIntent("Intent attribution changed")
+            self.db.execute("INSERT OR IGNORE INTO command_metadata VALUES (?,?,?)", (intent, command_id, client_order_id))
+
+    def acknowledged_order(self, intent):
+        import json
+        row = self.db.execute("SELECT result FROM intents WHERE intent=? AND operation='create' AND state='acknowledged'", (intent,)).fetchone()
+        result = json.loads(row[0]) if row and row[0] else {}
+        value = result.get("orderId") if isinstance(result, dict) else None
+        return str(value) if value is not None else None
+
+    def order_correlations(self):
+        import json
+        result = {}
+        for payload, command_id, client_order_id in self.db.execute("""SELECT i.result,m.command_id,m.client_order_id
+                FROM intents i JOIN command_metadata m ON i.intent=m.intent
+                WHERE i.operation='create' AND i.state='acknowledged' AND i.result IS NOT NULL"""):
+            identifier = json.loads(payload).get("orderId")
+            if identifier is not None:
+                result[str(identifier)] = {"command_id": command_id}
+                if client_order_id is not None:
+                    result[str(identifier)]["client_order_id"] = client_order_id
+        return result
 
     def get(self, intent):
         row = self.db.execute("SELECT intent,operation,request_id,state,updated,result,broker_code FROM intents WHERE intent=?", (intent,)).fetchone()

@@ -186,7 +186,7 @@ class Listener:
         return True
 
 
-def consume(consumer, listener, stop):
+def consume(consumer, listener, stop, reports=None):
     from confluent_kafka import KafkaError
     while not stop.is_set():
         msg = consumer.poll(1.0)
@@ -205,7 +205,10 @@ def consume(consumer, listener, stop):
                 # terminate the listener without advancing Kafka's offset.
                 consumer.commit(message=msg, asynchronous=False)
         if not stop.is_set():
-            listener.execute_due()
+            if listener.execute_due() and reports is not None:
+                reports.after_command()
+            if reports is not None:
+                reports.tick()
 
 
 def parser():
@@ -222,6 +225,10 @@ def parser():
     p.add_argument("--inbox", type=Path, help="Defaults beside the journal; separate dry-run inbox")
     p.add_argument("--max-command-age", type=positive_seconds, default=300)
     p.add_argument("--max-notional", help="Optional maximum USD notional per order; market orders use a quote estimate")
+    p.add_argument("--account-topic", default="account-details")
+    p.add_argument("--order-topic", default="order-status")
+    p.add_argument("--report-interval", type=positive_seconds, default=30)
+    p.add_argument("--report-lookback-days", type=int, default=90)
     p.add_argument("--live", action="store_true", help="Execute incoming orders; default prepares only")
     p.add_argument("--check-config", action="store_true", help="Validate local configuration without network connections")
     return p
@@ -234,6 +241,8 @@ def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     if args.numerical_id < 1 or not args.string_id.strip():
         raise SystemExit("Positive numerical ID and nonempty string ID required")
+    if args.report_lookback_days < 1:
+        raise SystemExit("Report lookback days must be positive")
     if args.max_notional is not None:
         from .orders import number
         number(args.max_notional, "max notional")
@@ -256,26 +265,45 @@ def main():
                     "account_id": args.string_id, "account_num_id": args.numerical_id,
                     "mode": "live" if args.live else "dry-run", "network_connections": 0}))
                 return 0
-            from confluent_kafka import Consumer
-            journal, inbox, consumer = None, None, None
+            from confluent_kafka import Consumer, Producer
+            from .reporting import Reporter
+            from .report_loop import ReportLoop
+            journal, inbox, consumer, adapter, reporter = None, None, None, None, None
             try:
                 journal = Journal(args.journal)
                 inbox = Inbox(args.inbox)
-                adapter = BrokerAdapter(client, journal, live=args.live, max_notional=args.max_notional)
+                execution_path = args.inbox.with_name(args.inbox.stem + "-execution.sqlite3")
+                adapter = BrokerAdapter(client, journal, live=args.live, max_notional=args.max_notional,
+                    execution_path=execution_path, stop_requested=stop.is_set)
                 listener = Listener(adapter, inbox, string_id=args.string_id, numerical_id=args.numerical_id, max_age=args.max_command_age)
+                reports = None
+                if args.live:
+                    producer = Producer({"bootstrap.servers": args.bootstrap_servers,
+                        "client.id": f"starwealth-reports-{args.numerical_id}",
+                        "enable.idempotence": True, "acks": "all", "delivery.timeout.ms": 10000})
+                    reporter = Reporter(producer, args.inbox.with_name("ktrader-reports.sqlite3"),
+                        account_id=args.string_id, account_num_id=args.numerical_id,
+                        account_topic=args.account_topic, order_topic=args.order_topic, delivery_timeout=3)
+                    reports = ReportLoop(client, journal, reporter, lambda: inbox.enabled(args.string_id),
+                        interval=args.report_interval, lookback_days=args.report_lookback_days, reconcile=adapter.recover)
+                    reports.tick(force=True)
                 consumer = Consumer({"bootstrap.servers": args.bootstrap_servers,
                     "group.id": args.consumer_group_id,
                     "client.id": f"starwealth-{args.numerical_id}",
                     "enable.auto.commit": False, "enable.auto.offset.store": False,
                     "auto.offset.reset": "latest", "allow.auto.create.topics": False,
-                    "session.timeout.ms": 10000, "max.poll.interval.ms": 300000})
+                    "session.timeout.ms": 10000, "max.poll.interval.ms": 900000})
                 consumer.subscribe([args.topic])
                 LOG.info("Listening topic=%s group=%s account=%s account_num_id=%s mode=%s",
                     args.topic, args.consumer_group_id, args.string_id, args.numerical_id, "live" if args.live else "dry-run")
-                consume(consumer, listener, stop)
+                consume(consumer, listener, stop, reports)
             finally:
                 if consumer is not None:
                     consumer.close()
+                if reporter is not None:
+                    reporter.close()
+                if adapter is not None:
+                    adapter.close()
                 if inbox is not None:
                     inbox.close()
                 if journal is not None:
