@@ -8,6 +8,8 @@ Derived from Star Wealth Android 5.1.2. The [Fangde project](https://github.com/
 
 For Linux with the separately supplied private credential bundle, follow [LINUX.md](LINUX.md). The private bundle is never included in this repository or the source ZIP.
 
+For the Linux Kafka listener using KTrader commands and credentials in `~/star-configs`, see [KTRADER.md](KTRADER.md). Start it manually with `start-trading.sh`; `--live` enables order submission.
+
 ## Run on this workstation
 
 Open PowerShell in this folder. The launcher already points to the configured private profile and password material:

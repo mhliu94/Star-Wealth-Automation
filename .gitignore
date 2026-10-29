@@ -15,6 +15,13 @@ dist/
 *private*.tar.gz
 *.credentials.*
 credentials.txt
+passwords.txt
+*.passwords.*
+star-configs/
+logs/
+*.log
+*.pid
+nohup.out
 .private/
 private/
 

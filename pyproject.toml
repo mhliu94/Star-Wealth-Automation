@@ -11,9 +11,11 @@ dependencies = ["cryptography>=43", "tzdata>=2025.1"]
 
 [project.optional-dependencies]
 test = ["pytest>=8"]
+kafka = ["confluent-kafka>=2.6,<3"]
 
 [project.scripts]
 starwealth = "starwealth.cli:main"
+starwealth-ktrader = "starwealth.ktrader:main"
 
 [tool.setuptools.packages.find]
 include = ["starwealth*"]
