@@ -107,6 +107,8 @@ class BrokerAdapter:
     def execute(self, command):
         if not isinstance(command, dict):
             raise ValueError("Command must be a JSON object")
+        if command.get("type") == "CANCEL_ORDER":
+            return self.cancel_one(command)
         if command.get("type") == "CANCEL_OPEN_ORDERS":
             return self.cancel_open_orders(command)
         is_fok = command.get("type") == "LIMIT_ORDER_FOK" or (
@@ -230,6 +232,36 @@ class BrokerAdapter:
         # Never return broker response bodies, account identifiers or session data.
         # An acknowledged write is deliberately not described as a filled order.
         return outcome
+
+    def cancel_one(self, command):
+        intent_id(command)  # validate the command envelope before any broker access
+        order_id = command.get("order_id")
+        if (not isinstance(order_id, str) or not order_id or order_id != order_id.strip()
+                or len(order_id) > 256 or any(ord(c) < 32 for c in order_id)):
+            raise ValueError("CANCEL_ORDER requires an exact broker order_id")
+        view = self.order_view(order_id)  # verifies the selected subaccount
+        if command.get("symbol") and view["symbol"] != command["symbol"]:
+            raise ValueError("Cancellation symbol does not match the broker order")
+        terminal = {"FILLED", "CANCELED", "REJECTED", "EXPIRED"}
+        if view["status"] in terminal:
+            return {"state": "acknowledged", "order_id": order_id, "terminal": True}
+        if not view["cancelable"]:
+            raise OutcomeUnknown("Order is not currently cancellable; inspect broker reports")
+        if not self.live:
+            return {"state": "dry_run", "order_id": order_id}
+        identity = "cancel-order:" + hashlib.sha256((command["account_id"] + "\0" + order_id).encode()).hexdigest()
+        if self.journal.get(identity) is None:
+            try:
+                self._cancel(order_id, identity)
+            except Exception:
+                pass  # reconcile by reads; the write journal prevents a second send
+        for delay in (0, 1, 1, 2):
+            if delay:
+                self.sleep(delay)
+            view = self.order_view(order_id)
+            if view["status"] in terminal:
+                return {"state": "acknowledged", "order_id": order_id, "terminal": True}
+        raise OutcomeUnknown("Cancellation remains unconfirmed; inspect broker reports")
 
     def cancel_open_orders(self, command):
         self._validate_execution_options(command)

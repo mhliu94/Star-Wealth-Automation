@@ -151,7 +151,7 @@ class Listener:
             due = max(now, due)
         if not self.inbox.add(command, due):
             return "duplicate"
-        if command["type"] not in {"SET_TRADING_ENABLED", "CANCEL_OPEN_ORDERS"} and not self.inbox.enabled(self.string_id):
+        if command["type"] not in {"SET_TRADING_ENABLED", "CANCEL_OPEN_ORDERS", "CANCEL_ORDER"} and not self.inbox.enabled(self.string_id):
             self.inbox.finish(command, "disabled")
             return "disabled"
         return "queued"
@@ -173,7 +173,7 @@ class Listener:
                     raise ValueError("trading_enabled must be a JSON boolean")
                 self.inbox.set_enabled(self.string_id, enabled)
                 state = "enabled" if enabled else "disabled"
-            elif command["type"] != "CANCEL_OPEN_ORDERS" and not self.inbox.enabled(self.string_id):
+            elif command["type"] not in {"CANCEL_OPEN_ORDERS", "CANCEL_ORDER"} and not self.inbox.enabled(self.string_id):
                 state = "disabled"
             else:
                 result = self.adapter.execute(command)

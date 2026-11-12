@@ -193,3 +193,24 @@ def test_day_order_with_no_automatic_cancellation_is_supported(journal):
     broker = Broker()
     result = BrokerAdapter(broker, journal).execute(command(time_in_force="DAY", cancel_unfilled=False))
     assert result["state"] == "dry_run"
+
+
+def test_exact_cancel_never_discovers_or_cancels_other_orders(journal):
+    from unittest.mock import Mock
+    broker = Broker()
+    adapter = BrokerAdapter(broker, journal, live=True, sleep=lambda _: None)
+    adapter.order_view = Mock(side_effect=[{"status":"NEW","cancelable":True,"symbol":"AAPL"},
+                                         {"status":"CANCELED","cancelable":False,"symbol":"AAPL"}])
+    adapter._cancel = Mock()
+    result = adapter.execute(command(type="CANCEL_ORDER", order_id="only-this-order"))
+    assert result["terminal"] is True
+    assert adapter._cancel.call_count == 1
+    assert adapter._cancel.call_args.args[0] == "only-this-order"
+    assert all(call.args == ("only-this-order",) for call in adapter.order_view.call_args_list)
+
+
+@pytest.mark.parametrize("identifier", [None, "", True, " padded"])
+def test_exact_cancel_requires_a_broker_order_id(journal, identifier):
+    adapter = BrokerAdapter(Broker(), journal)
+    with pytest.raises(ValueError, match="exact broker"):
+        adapter.execute(command(type="CANCEL_ORDER", order_id=identifier))
