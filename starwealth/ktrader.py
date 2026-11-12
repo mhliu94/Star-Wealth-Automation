@@ -3,6 +3,7 @@
 The API journal guards financial writes; the inbox also deduplicates rejected,
 delayed and control commands across Kafka redeliveries and process restarts.
 """
+from .kafka_security import connection_settings
 import argparse
 from datetime import datetime
 import hashlib
@@ -279,7 +280,7 @@ def main():
                 listener = Listener(adapter, inbox, string_id=args.string_id, numerical_id=args.numerical_id, max_age=args.max_command_age)
                 reports = None
                 if args.live:
-                    producer = Producer({"bootstrap.servers": args.bootstrap_servers,
+                    producer = Producer({**connection_settings(), "bootstrap.servers": args.bootstrap_servers,
                         "client.id": f"starwealth-reports-{args.numerical_id}",
                         "enable.idempotence": True, "acks": "all", "delivery.timeout.ms": 10000})
                     reporter = Reporter(producer, args.inbox.with_name("ktrader-reports.sqlite3"),
@@ -288,7 +289,7 @@ def main():
                     reports = ReportLoop(client, journal, reporter, lambda: inbox.enabled(args.string_id),
                         interval=args.report_interval, lookback_days=args.report_lookback_days, reconcile=adapter.recover)
                     reports.tick(force=True)
-                consumer = Consumer({"bootstrap.servers": args.bootstrap_servers,
+                consumer = Consumer({**connection_settings(), "bootstrap.servers": args.bootstrap_servers,
                     "group.id": args.consumer_group_id,
                     "client.id": f"starwealth-{args.numerical_id}",
                     "enable.auto.commit": False, "enable.auto.offset.store": False,
