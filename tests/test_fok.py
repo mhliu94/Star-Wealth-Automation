@@ -61,7 +61,7 @@ def test_immediate_fill_never_cancels_and_replay_never_resubmits(tmp_path):
     executor = broker.executor(tmp_path / "fok.db")
     result = executor.execute(COMMAND, "intent")
     assert result == {"state": "acknowledged", "order_id": "broker-1", "status": "FILLED"}
-    assert broker.events == [("sleep", 5), ("submit", "intent"), ("detail", "broker-1")]
+    assert broker.events == [("submit", "intent"), ("detail", "broker-1")]
     assert executor.execute(COMMAND, "intent") == result
     assert len(actions(broker, "submit")) == 1
     assert executor.pending() == []
@@ -72,7 +72,7 @@ def test_fill_during_two_second_wait_never_cancels(tmp_path):
     broker = Broker([view(), view("FILLED", "10")])
     executor = broker.executor(tmp_path / "fok.db")
     assert executor.execute(COMMAND, "intent")["status"] == "FILLED"
-    assert actions(broker, "sleep") == [("sleep", 5), ("sleep", 2)]
+    assert actions(broker, "sleep") == [("sleep", 2)]
     assert not actions(broker, "cancel")
     executor.close()
 
@@ -83,7 +83,7 @@ def test_partial_fill_cancels_remainder_and_waits_for_confirmation(tmp_path):
     executor = broker.executor(tmp_path / "fok.db")
     assert executor.execute(COMMAND, "intent")["status"] == "CANCELED"
     assert actions(broker, "cancel") == [("cancel", "broker-1", executor.cancel_intent_id("intent"))]
-    assert actions(broker, "sleep") == [("sleep", 5), ("sleep", 2), ("sleep", 1)]
+    assert actions(broker, "sleep") == [("sleep", 2), ("sleep", 1)]
     executor.close()
 
 
@@ -119,7 +119,7 @@ def test_unknown_cancellation_stays_unknown_and_never_retries_after_restart(tmp_
     executor = broker.executor(path)
     with pytest.raises(OutcomeUnknown):
         executor.execute(COMMAND, "intent")
-    assert actions(broker, "sleep") == [("sleep", 5), ("sleep", 2), ("sleep", 1), ("sleep", 1), ("sleep", 2)]
+    assert actions(broker, "sleep") == [("sleep", 2), ("sleep", 1), ("sleep", 1), ("sleep", 2)]
     assert executor.pending()[0]["cancel_started"] is True
     executor.close()
     executor = broker.executor(path)
@@ -212,7 +212,7 @@ def test_unresolved_journal_does_not_release_submission_gate(tmp_path):
 def test_crash_before_submit_is_conservatively_unresolved(tmp_path):
     path = tmp_path / "fok.db"
     broker = Broker([view()])
-    executor = broker.executor(path)
+    executor = broker.executor(path, submission_delay_seconds=5)
     def interrupted(_):
         raise KeyboardInterrupt()
     executor.sleep = interrupted
@@ -332,7 +332,7 @@ def test_newly_cancelable_order_is_cancelled_during_polling_without_extra_wait(t
     executor = broker.executor(tmp_path / "fok.db")
     assert executor.execute(COMMAND, "intent")["status"] == "CANCELED"
     assert len(actions(broker, "cancel")) == 1
-    assert actions(broker, "sleep") == [("sleep", 5), ("sleep", 2), ("sleep", 1)]
+    assert actions(broker, "sleep") == [("sleep", 2), ("sleep", 1)]
     assert broker.events.index(actions(broker, "cancel")[0]) > broker.events.index(("sleep", 2))
     executor.close()
 

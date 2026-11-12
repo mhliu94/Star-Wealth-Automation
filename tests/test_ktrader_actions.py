@@ -95,7 +95,7 @@ def test_three_fok_forms_cancel_only_exact_unfilled_remainder(tmp_path, journal,
         assert [call[1] for call in calls(broker, "cancel")] == ["new-order"]
         assert calls(broker, "cancel")[0][2] == FokExecutor.cancel_intent_id(intent_id(action))
         assert len(calls(broker, "submit")) == 1
-        assert sleeps == [5, 2]
+        assert sleeps == [2]
         assert adapter.execute(action) == result
         assert len(calls(broker, "submit")) == 1
         assert len(calls(broker, "cancel")) == 1

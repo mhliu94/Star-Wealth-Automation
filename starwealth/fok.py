@@ -63,7 +63,13 @@ class FokExecutor:
     was never reserved; ``True`` or ``None`` preserves the no-resend marker.
     """
 
-    def __init__(self, path, *, submit, detail, cancel, resolve_submit=None, resolve_cancel=None, clock=time.time, sleep=time.sleep):
+    def __init__(self, path, *, submit, detail, cancel, resolve_submit=None, resolve_cancel=None, clock=time.time, sleep=time.sleep, submission_delay_seconds=0):
+        import math
+        if isinstance(submission_delay_seconds, bool):
+            raise ValueError("Submission delay must be finite and within 0..300 seconds")
+        self.submission_delay_seconds=float(submission_delay_seconds)
+        if not math.isfinite(self.submission_delay_seconds) or not 0 <= self.submission_delay_seconds <= 300:
+            raise ValueError("Submission delay must be finite and within 0..300 seconds")
         Path(path).parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.db = sqlite3.connect(path)
         self.db.row_factory = sqlite3.Row
@@ -117,7 +123,8 @@ class FokExecutor:
             raise
 
         try:
-            self.sleep(5)
+            if self.submission_delay_seconds:
+                self.sleep(self.submission_delay_seconds)
             order_id = self.submit(command, intent_id)
             if not isinstance(order_id, str) or not order_id.strip():
                 raise ValueError("Submission returned no broker order ID")

@@ -132,7 +132,7 @@ The behavior follows [GigaMoney Linux's implementation](https://github.com/mhliu
 `LIMIT_ORDER_FOK`, or `LIMIT_ORDER` with `time_in_force: "FOK"` or
 `cancel_unfilled: true`, selects the same workflow:
 
-1. Persist the intent, wait five seconds, and submit an ordinary limit order.
+1. Persist the intent, apply the configurable submission delay (default **0 seconds**), and submit an ordinary limit order. The Kafka worker exposes `--fok-submission-delay-seconds` / `STARWEALTH_FOK_SUBMISSION_DELAY_SECONDS`; new accounts default to zero.
 2. Read back the exact acknowledged order and verify its symbol, side, quantity,
    limit price and order type.
 3. If still active, wait two seconds and read again. Cancel the remainder only

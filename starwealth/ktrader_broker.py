@@ -41,7 +41,7 @@ def decimal_text(value):
 
 
 class BrokerAdapter:
-    def __init__(self, client, journal, *, live=False, max_notional=None, execution_path=None, sleep=time.sleep, stop_requested=lambda: False):
+    def __init__(self, client, journal, *, live=False, max_notional=None, execution_path=None, sleep=time.sleep, stop_requested=lambda: False, fok_submission_delay_seconds=0):
         self.client = client
         self.journal = journal
         self.live = live
@@ -55,7 +55,8 @@ class BrokerAdapter:
             from .fok import FokExecutor
             self.fok = FokExecutor(execution_path, submit=self._fok_submit, detail=self.order_view,
                 cancel=self._cancel, resolve_submit=self._resolve_submit,
-                resolve_cancel=lambda cid: self.journal.get(cid) is not None, sleep=sleep)
+                resolve_cancel=lambda cid: self.journal.get(cid) is not None, sleep=sleep,
+                submission_delay_seconds=fok_submission_delay_seconds)
 
     def close(self):
         if self.fok is not None:

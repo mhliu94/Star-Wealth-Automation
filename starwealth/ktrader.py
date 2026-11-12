@@ -47,6 +47,12 @@ def positive_seconds(value):
         raise ValueError("Seconds must be finite and positive")
     return result
 
+def nonnegative_seconds(value):
+    result=float(value)
+    if isinstance(value,bool) or not math.isfinite(result) or not 0<=result<=300:
+        raise ValueError("Seconds must be finite and within 0..300")
+    return result
+
 
 def parse_message(raw):
     def invalid_constant(_):
@@ -226,6 +232,8 @@ def parser():
     p.add_argument("--journal", type=Path, default=os.environ.get("STARWEALTH_JOURNAL", str(config / "orders.sqlite3")))
     p.add_argument("--inbox", type=Path, help="Defaults beside the journal; separate dry-run inbox")
     p.add_argument("--max-command-age", type=positive_seconds, default=300)
+    p.add_argument("--fok-submission-delay-seconds", type=nonnegative_seconds,
+                   default=os.environ.get("STARWEALTH_FOK_SUBMISSION_DELAY_SECONDS", "0"))
     p.add_argument("--max-notional", help="Optional maximum USD notional per order; market orders use a quote estimate")
     p.add_argument("--account-topic", default="account-details")
     p.add_argument("--order-topic", default="order-status")
@@ -276,7 +284,8 @@ def main():
                 inbox = Inbox(args.inbox)
                 execution_path = args.inbox.with_name(args.inbox.stem + "-execution.sqlite3")
                 adapter = BrokerAdapter(client, journal, live=args.live, max_notional=args.max_notional,
-                    execution_path=execution_path, stop_requested=stop.is_set)
+                    execution_path=execution_path, stop_requested=stop.is_set,
+                    fok_submission_delay_seconds=args.fok_submission_delay_seconds)
                 listener = Listener(adapter, inbox, string_id=args.string_id, numerical_id=args.numerical_id, max_age=args.max_command_age)
                 reports = None
                 if args.live:
