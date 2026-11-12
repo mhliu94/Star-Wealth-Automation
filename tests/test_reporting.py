@@ -313,7 +313,7 @@ def test_account_outage_coalesces_to_latest_snapshot_without_dropping_order_even
     producer = Producer()
     resumed = reporter(tmp_path, producer)
     assert resumed.flush() == 3
-    assert [event["sequence"] for event in events(producer) if "sequence" in event] == [0, 1]
+    assert [event["sequence"] for event in events(producer) if "order_id" in event] == [0, 1]
     accounts = [event for event in events(producer) if "cash" in event]
     assert len(accounts) == 1 and accounts[0]["cash"] == 119
     resumed.close()

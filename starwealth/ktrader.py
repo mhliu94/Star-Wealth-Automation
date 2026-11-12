@@ -189,7 +189,8 @@ class Listener:
 def consume(consumer, listener, stop, reports=None):
     from confluent_kafka import KafkaError
     while not stop.is_set():
-        msg = consumer.poll(1.0)
+        timeout = 1.0 if reports is None else max(0, min(1.0, reports.next_refresh - time.time()))
+        msg = consumer.poll(timeout)
         if msg is not None:
             if msg.error():
                 if msg.error().code() != KafkaError._PARTITION_EOF:

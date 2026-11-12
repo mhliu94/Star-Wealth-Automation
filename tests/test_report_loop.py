@@ -63,18 +63,18 @@ def test_malformed_order_does_not_prevent_other_order_reports(monkeypatch):
 
 def test_interval_command_refresh_and_delivery_retry(monkeypatch):
     loop, client, _, reporter, _, _, now = configured(monkeypatch)
-    reporter.flush.side_effect = [RuntimeError("offline"), 2]
+    reporter.flush.side_effect = [RuntimeError("offline"), 2, 2]
     loop.tick()
-    assert loop.next_refresh == 1030
+    assert loop.next_refresh == 1001
     now[0] = 1001
     loop.tick()
-    assert client.order_history.call_count == 2
+    assert client.order_history.call_count == 4
     loop.after_command()
-    assert loop.next_refresh == 1003
+    assert loop.next_refresh == 0
     now[0] = 1003
     loop.tick()
-    assert reporter.flush.call_count == 2
-    assert client.order_history.call_count == 4
+    assert reporter.flush.call_count == 3
+    assert client.order_history.call_count == 6
 
 
 def test_old_gtc_missing_from_recent_and_active_is_reconciled_by_symbol(monkeypatch):
@@ -113,8 +113,8 @@ def test_periodic_reconcile_runs_with_reporting_interval(monkeypatch):
     now[0] = 1030
     loop.tick()
     assert loop.reconcile.call_count == 2
-    assert reporter.publish_account.call_count == 2
-    assert reporter.flush.call_count == 2
+    assert reporter.publish_account.call_count == 3
+    assert reporter.flush.call_count == 3
 
 
 def test_reconciliation_error_does_not_block_account_reports(monkeypatch, caplog):

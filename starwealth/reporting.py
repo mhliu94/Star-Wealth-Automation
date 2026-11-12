@@ -220,6 +220,15 @@ class Reporter:
         return True
 
     def _deliver(self, topic, key, payload):
+        if topic != self.account_topic:
+            return self._deliver_raw(topic, key, payload)
+        from .account_delta import AccountDeltaPublisher
+        if not hasattr(self, '_account_deltas'):
+            self._account_deltas = AccountDeltaPublisher()
+        return self._account_deltas.publish(json.loads(payload),
+            lambda event: self._deliver_raw(topic, self.account_id, encoded(event)))
+
+    def _deliver_raw(self, topic, key, payload):
         reports = []
         self.producer.produce(topic, key=key.encode(), value=payload.encode(),
                               on_delivery=lambda error, message: reports.append(error))
