@@ -111,15 +111,18 @@ class BrokerAdapter:
             return self.cancel_one(command)
         if command.get("type") == "CANCEL_OPEN_ORDERS":
             return self.cancel_open_orders(command)
-        is_fok = command.get("type") == "LIMIT_ORDER_FOK" or (
+        is_timed_cancel = command.get("type") in {"LIMIT_ORDER_IOC", "LIMIT_ORDER_FOK"} or (
             command.get("type") == "LIMIT_ORDER" and
-            (command.get("time_in_force") == "FOK" or command.get("cancel_unfilled") is True))
+            (command.get("time_in_force") in ("IOC", "FOK") or command.get("cancel_unfilled") is True))
         if self.live and self.fok and self.fok.pending():
             self.recover()
             if self.fok.pending():
                 raise OutcomeUnknown("An earlier FOK remains unresolved; new submissions are paused")
-        if is_fok:
-            if command.get("time_in_force") not in (None, "DAY", "FOK"):
+        if is_timed_cancel:
+            kind, tif = command.get("type"), command.get("time_in_force")
+            if (tif not in (None, "DAY", "FOK", "IOC") or
+                    (kind == "LIMIT_ORDER_FOK" and tif == "IOC") or
+                    (kind == "LIMIT_ORDER_IOC" and tif in ("DAY", "FOK"))):
                 raise ValueError("Synthetic FOK conflicts with the requested time_in_force")
             if command.get("cancel_unfilled") is not None and type(command["cancel_unfilled"]) is not bool:
                 raise ValueError("cancel_unfilled must be a JSON boolean")
@@ -128,6 +131,9 @@ class BrokerAdapter:
             self._validate_execution_options({**command, "time_in_force": "DAY", "cancel_unfilled": False})
             from .fok import expected_order
             fok_command = {**command, "type": "LIMIT_ORDER_FOK"}
+            # Preserve the journal fingerprint across old and new wire spellings.
+            if fok_command.get("time_in_force") == "IOC":
+                fok_command["time_in_force"] = "FOK"
             expected_order(fok_command)
             if not self.live:
                 result = self._execute_order({**command, "type": "LIMIT_ORDER", "time_in_force": "DAY", "cancel_unfilled": False})

@@ -189,6 +189,20 @@ def test_unsupported_execution_constraints_rejected_before_reads(journal, option
     assert broker.reads == 0
 
 
+def test_ioc_limit_selects_exact_order_timed_cancel(journal):
+    from unittest.mock import Mock
+    adapter = BrokerAdapter(Broker(), journal)
+    adapter.live = True
+    adapter.fok = Mock()
+    adapter.fok.pending.return_value = []
+    order = command(type="LIMIT_ORDER_IOC", time_in_force="IOC", cancel_unfilled=True, qty_shares=100, limit_price=10)
+    adapter.execute(order)
+    canonical, key = adapter.fok.execute.call_args.args
+    assert canonical["type"] == "LIMIT_ORDER_FOK"  # Stable persisted fingerprint.
+    assert canonical["time_in_force"] == "FOK"
+    assert key == intent_id(order)
+
+
 def test_day_order_with_no_automatic_cancellation_is_supported(journal):
     broker = Broker()
     result = BrokerAdapter(broker, journal).execute(command(time_in_force="DAY", cancel_unfilled=False))

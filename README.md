@@ -147,3 +147,5 @@ python -m pytest tests -q
 ```
 
 Not implemented: options, fractional shares, HK orders, amendments, IOC/FOK, all-session account routing, strategy scheduling, or automatic completion of new MFA challenges. App/server protocol or entitlement changes may require an update. No code can promise acceptance or fills through outages, account restrictions, competing logins, or changing market conditions.
+
+KTrader and Nextgen use `LIMIT_ORDER_IOC` with `time_in_force: IOC` for a limit followed by cancellation of its remaining shares. Partial fills count. The listener also accepts the previous `LIMIT_ORDER_FOK` spelling for retained commands.
