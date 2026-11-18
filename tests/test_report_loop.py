@@ -12,7 +12,7 @@ def configured(monkeypatch):
     journal.order_correlations.return_value = {"order-1": {"command_id": "command-1"}}
     reporter = Mock(account_id="STAR-DONG", account_num_id=24)
     reporter.flush.return_value = 2
-    reporter.tracked_open_orders.return_value = []
+    reporter.unresolved_order_ids.return_value = set()
     account = Mock(return_value={"cash": 10})
     order = Mock(side_effect=lambda *args, **kwargs: {"order_id": "order-1", "cancelable": True})
     monkeypatch.setattr("starwealth.report_loop.account_snapshot", account)
@@ -25,8 +25,7 @@ def test_reports_orders_and_cash_with_command_correlation(monkeypatch):
     loop, client, _, reporter, account, order, _ = configured(monkeypatch)
     loop.tick()
     account.assert_called_once_with(client, "STAR-DONG", 24, True)
-    assert client.order_history.call_args_list == [call(lookback_days=90),
-        call(from_date="2000-01-01", statuses=[10, 20, 21, 40, 60])]
+    assert client.order_history.call_args_list == [call(from_date="2000-01-01", statuses=[10, 20, 21, 40, 60])]
     assert order.call_args.kwargs["command_id"] == "command-1"
     assert order.call_args.kwargs["sub_account_id"] == "broker-account"
     reporter.queue_order.assert_called_once_with({"order_id": "order-1"})
@@ -68,24 +67,26 @@ def test_interval_command_refresh_and_delivery_retry(monkeypatch):
     assert loop.next_refresh == 1001
     now[0] = 1001
     loop.tick()
-    assert client.order_history.call_count == 4
+    assert client.order_history.call_count == 2
     loop.after_command()
     assert loop.next_refresh == 0
     now[0] = 1003
     loop.tick()
     assert reporter.flush.call_count == 3
-    assert client.order_history.call_count == 6
+    assert client.order_history.call_count == 3
 
 
-def test_old_gtc_missing_from_recent_and_active_is_reconciled_by_symbol(monkeypatch):
+def test_old_gtc_missing_from_active_is_reconciled_by_exact_id(monkeypatch):
     loop, client, _, reporter, _, order, _ = configured(monkeypatch)
-    reporter.tracked_open_orders.return_value = [{"order_id": "old-order", "symbol": "AAPL",
-                                                  "created_at": "2025-01-02T12:00:00Z", "status": "NEW"}]
+    reporter.unresolved_order_ids.return_value = {"old-order"}
     terminal = {"orderId": "old-order", "marketCode": "US", "orderStatus": 70}
-    client.order_history.side_effect = [[], [], [{"orderId": "unrelated-order"}, terminal]]
+    client.order_history.return_value = []
+    terminal["subAccountId"] = "broker-account"
+    client.order_detail.return_value = terminal
     order.side_effect = lambda row, **kwargs: {"order_id": row["orderId"], "status": "CANCELED", "cancelable": False}
     loop.tick()
-    assert client.order_history.call_args_list[-1] == call(from_date="2025-01-01", stock_code="AAPL")
+    client.order_detail.assert_called_once_with("old-order")
+    client.order_history.assert_called_once_with(from_date="2000-01-01", statuses=[10, 20, 21, 40, 60])
     assert order.call_args.args[0] == terminal
     reporter.queue_order.assert_called_once_with({"order_id": "old-order", "status": "CANCELED"})
     reporter.flush.assert_called_once_with(max_records=20)
@@ -93,8 +94,7 @@ def test_old_gtc_missing_from_recent_and_active_is_reconciled_by_symbol(monkeypa
 
 def test_missing_tracked_order_is_not_inferred_canceled(monkeypatch, caplog):
     loop, client, _, reporter, _, order, _ = configured(monkeypatch)
-    reporter.tracked_open_orders.return_value = [{"order_id": "old-order", "symbol": "AAPL",
-                                                  "created_at": "2025-01-02T12:00:00Z", "status": "NEW"}]
+    reporter.unresolved_order_ids.return_value = {"old-order"}
     client.order_history.return_value = []
     loop.tick()
     order.assert_not_called()

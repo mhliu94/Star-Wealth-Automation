@@ -1,4 +1,5 @@
 """KTrader snapshots with a durable outbox; this module never submits trades."""
+from starwealth import latency
 from datetime import datetime, timezone
 import json
 import math
@@ -130,6 +131,18 @@ class Reporter:
                                (self.account_id,))
         return [snapshot for row in rows if (snapshot := json.loads(row[0]))["status"] not in terminal]
 
+    def unresolved_order_ids(self, correlations):
+        """Include open snapshots and acknowledged creates that have never been reported."""
+        rows = self.db.execute("""
+            SELECT order_id FROM report_orders WHERE account=?
+              AND json_extract(payload, '$.status') NOT IN ('FILLED','CANCELED','REJECTED','EXPIRED')
+            UNION
+            SELECT c.key FROM json_each(?) c
+            LEFT JOIN report_orders r ON r.account=? AND r.order_id=c.key
+            WHERE r.order_id IS NULL OR json_extract(r.payload,'$.command_id') IS NULL
+        """, (self.account_id, encoded(correlations), self.account_id))
+        return {identifier for identifier, in rows}
+
     def _queue(self, topic, key, payload):
         serialized = encoded(payload)
         if len(serialized.encode()) > 65536:
@@ -228,6 +241,7 @@ class Reporter:
         return self._account_deltas.publish(json.loads(payload),
             lambda event: self._deliver_raw(topic, self.account_id, encoded(event)))
 
+    @latency.timed("report_delivery", "kafka", arg=1, payload=3)
     def _deliver_raw(self, topic, key, payload):
         reports = []
         self.producer.produce(topic, key=key.encode(), value=payload.encode(),

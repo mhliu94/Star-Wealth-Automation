@@ -5,7 +5,6 @@ live book. A market order's notional check is an estimate, not an execution-pric
 guarantee. Routing, scheduling and the account enable switch belong to the runner.
 """
 from dataclasses import replace
-from datetime import datetime, timedelta, timezone
 from decimal import Decimal, ROUND_FLOOR
 import hashlib
 import json
@@ -13,7 +12,7 @@ import time
 
 from .orders import Order, number, symbol
 from .errors import OutcomeUnknown, StarWealthError
-from .order_data import normalize_order
+from .order_data import exact_order_row, normalize_order
 
 
 SUPPORTED_ORDERS = frozenset({"MARKET_ORDER", "DELAYED_MARKET_ORDER", "LIMIT_ORDER"})
@@ -49,7 +48,6 @@ class BrokerAdapter:
                              if max_notional is not None else None)
         self.sleep = sleep
         self.stop_requested = stop_requested
-        self._order_search = {}
         self.fok = None
         if execution_path is not None:
             from .fok import FokExecutor
@@ -84,22 +82,11 @@ class BrokerAdapter:
         return result["order_id"]
 
     def order_view(self, order_id):
-        # OrderList is the documented shared model. Never infer filled/canceled
-        # from a missing row or an acknowledgement.
-        search = self._order_search.get(str(order_id))
-        if search is None:
-            for result, params, updated in self.journal.db.execute("""SELECT i.result,a.params,i.updated
-                    FROM intents i JOIN attempts a ON i.request_id=a.request_id
-                    WHERE i.operation='create' AND i.state='acknowledged'"""):
-                if result and str(json.loads(result).get("orderId")) == str(order_id):
-                    start = (datetime.fromtimestamp(updated, timezone.utc) - timedelta(days=1)).date().isoformat()
-                    search = {"from_date": start, "stock_code": json.loads(params).get("stockCode")}
-                    self._order_search[str(order_id)] = search
-                    break
-        for row in self.client.order_history(**(search or {"from_date": "2000-01-01"})):
-            if str(row.get("orderId")) == str(order_id):
-                return normalize_order(row, sub_account_id=self.client.state["account"]["subAcctId"])
-        raise OutcomeUnknown("Acknowledged order is not visible in broker history yet")
+        try:
+            row = exact_order_row(self.client, order_id)
+            return normalize_order(row, sub_account_id=self.client.state["account"]["subAcctId"])
+        except ValueError as exc:
+            raise OutcomeUnknown("Exact order detail could not confirm the requested ticket") from exc
 
     def _cancel(self, order_id, identity):
         return self.client.cancel(str(order_id), journal=self.journal, intent_id=identity, live=self.live)
@@ -233,8 +220,6 @@ class BrokerAdapter:
             outcome["estimated_notional"] = result["estimated_notional"]
         else:
             outcome["order_id"] = str(result["orderId"])
-            self._order_search[outcome["order_id"]] = {"stock_code": stock,
-                "from_date": (datetime.now(timezone.utc) - timedelta(days=1)).date().isoformat()}
         # Never return broker response bodies, account identifiers or session data.
         # An acknowledged write is deliberately not described as a filled order.
         return outcome
@@ -288,8 +273,6 @@ class BrokerAdapter:
                 continue
             view = normalize_order(row, sub_account_id=self.client.state["account"]["subAcctId"])
             if view["cancelable"]:
-                start = (datetime.fromisoformat(view["created_at"].replace("Z", "+00:00")) - timedelta(days=1)).date().isoformat()
-                self._order_search[view["order_id"]] = {"stock_code": view["symbol"], "from_date": start}
                 candidates.append(view["order_id"])
         if not self.live:
             return {"state": "dry_run", "candidates": len(candidates)}

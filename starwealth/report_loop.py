@@ -1,10 +1,12 @@
 """Serialized broker reads and independent Kafka snapshot delivery."""
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 import logging
+import threading
+from concurrent.futures import Future
 import time
 
 from .account_data import account_snapshot
-from .order_data import normalize_order
+from .order_data import ACTIVE, exact_order_row, normalize_order
 
 LOG = logging.getLogger("starwealth.reporting")
 
@@ -30,6 +32,7 @@ class ReportLoop:
         if not force and self.clock() < self.next_refresh:
             return
         started = self.clock()
+        elapsed_start = time.perf_counter_ns()
         account_ok, order_count = False, 0
         observations = []
         try:
@@ -41,25 +44,21 @@ class ReportLoop:
                 except Exception as exc:
                     LOG.error("FOK reconciliation incomplete (%s)", type(exc).__name__)
             try:
-                rows = self.client.order_history(lookback_days=self.lookback_days)
-                # Include older open/GTC orders even beyond the history window.
-                active = self.client.order_history(from_date="2000-01-01", statuses=[10, 20, 21, 40, 60])
-                by_id = {str(row.get("orderId")): row for row in rows}
-                by_id.update({str(row.get("orderId")): row for row in active})
-                tracked = self.reporter.tracked_open_orders() if hasattr(self.reporter, "tracked_open_orders") else []
-                for previous in tracked:
-                    if previous["order_id"] in by_id:
-                        continue
-                    start = (datetime.fromisoformat(previous["created_at"].replace("Z", "+00:00")) - timedelta(days=1)).date().isoformat()
-                    older = self.client.order_history(from_date=start, stock_code=previous["symbol"])
-                    for row in older:
-                        if str(row.get("orderId")) == previous["order_id"]:
-                            by_id[previous["order_id"]] = row
-                            break
-                    else:
-                        LOG.warning("A previously open order is missing from broker history; retaining its last reported state")
-                rows = list(by_id.values())
+                # The broker filters the discovery query to working orders, including GTC.
+                try:
+                    active = self.client.order_history(from_date="2000-01-01", statuses=sorted(ACTIVE))
+                except Exception as exc:
+                    LOG.error("Working-order discovery failed (%s); checking tracked tickets", type(exc).__name__)
+                    active = []
+                by_id = {str(row["orderId"]): row for row in active if isinstance(row, dict) and row.get("orderId") is not None}
                 correlations = self.journal.order_correlations()
+                for identifier in sorted(self.reporter.unresolved_order_ids(correlations) - by_id.keys()):
+                    try:
+                        by_id[identifier] = exact_order_row(self.client, identifier)
+                    except Exception as exc:
+                        LOG.warning("Order detail unavailable ticket=%s (%s); retaining its last reported state",
+                                    identifier, type(exc).__name__)
+                rows = sorted(by_id.values(), key=lambda row: str(row.get("orderId")) not in correlations)
                 observed_at = datetime.fromtimestamp(self.clock(), timezone.utc)
                 for row in rows:
                     if str(row.get("marketCode", "")).upper() != "US":
@@ -90,8 +89,47 @@ class ReportLoop:
                 self.next_account = self.clock() + (1 if self.clock() < self.refresh_until else min(30, self.interval))
             try:
                 sent = self.reporter.flush(max_records=20)
-                LOG.info("Reporting account_read=%s orders_read=%s snapshots_delivered=%s", account_ok, order_count, sent)
+                LOG.info("Reporting account_read=%s orders_read=%s snapshots_delivered=%s elapsed_ms=%.3f",
+                         account_ok, order_count, sent, (time.perf_counter_ns()-elapsed_start)/1_000_000)
             except Exception as exc:
                 LOG.error("Snapshot delivery incomplete (%s); durable outbox will retry", type(exc).__name__)
         finally:
             self.next_refresh = max(started + 1.0, self.clock() + .01)
+
+
+class BackgroundReports:
+    """The reporting thread owns its SQLite handles and Kafka outbox."""
+    def __init__(self, open_loop, stop):
+        self.open_loop = open_loop
+        self.stop = stop
+        self.wake = threading.Event()
+        self.ready = Future()
+        self.thread = threading.Thread(target=self._run, name="broker-reporting")
+
+    def start(self):
+        self.thread.start()
+        self.ready.result()
+
+    def after_command(self):
+        self.wake.set()
+
+    def close(self):
+        self.stop.set()
+        self.wake.set()
+        self.thread.join()
+
+    def _run(self):
+        try:
+            with self.open_loop() as loop:
+                self.ready.set_result(None)
+                while not self.stop.is_set():
+                    loop.tick()
+                    if self.wake.wait(max(0, loop.next_refresh - time.time())):
+                        self.wake.clear()
+                        loop.after_command()
+        except Exception as exc:
+            self.stop.set()
+            if not self.ready.done():
+                self.ready.set_exception(exc)
+            else:
+                LOG.exception("Reporting worker stopped")

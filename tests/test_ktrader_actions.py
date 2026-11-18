@@ -54,6 +54,13 @@ class Broker:
             raise result
         return deepcopy(result)
 
+    def order_detail(self, order_id):
+        self.calls.append(("detail", order_id))
+        result = self.history.pop(0) if len(self.history) > 1 else self.history[0]
+        if isinstance(result, BaseException):
+            raise result
+        return deepcopy(next((r for r in result if r["orderId"] == order_id), {}))
+
     def cancel(self, order_id, *, journal, intent_id, live):
         self.calls.append(("cancel", order_id, intent_id, live))
         if live:
@@ -249,5 +256,6 @@ def test_disabled_listener_still_executes_cancel(tmp_path, journal):
         state = inbox.db.execute("SELECT state FROM commands WHERE id=?", (action["command_id"],)).fetchone()[0]
         assert state == "acknowledged"
         assert len(calls(broker, "history")) == 1
+        assert not calls(broker, "detail")
     finally:
         inbox.close()

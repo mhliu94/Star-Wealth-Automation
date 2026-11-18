@@ -157,11 +157,16 @@ for reconciliation rather than treated as successful.
 
 ## Balance and order reporting
 
-Live mode reports immediately at startup, every 30 seconds after the previous
-refresh finishes, and shortly after commands (two-second refresh delay).
-`--account-topic`, `--order-topic`, `--report-interval` and
-`--report-lookback-days` configure this behavior. Reporting uses the same
-serialized client/profile lock as trading.
+Live reporting discovers working orders through the broker's active-status filter.
+A tracked ticket that disappears from the open list, or an acknowledged submission
+without a first report, is queried by exact order ID until broker-confirmed terminal.
+Completed tickets remain available in the local journal. The live loop accepts
+the legacy `--report-lookback-days` flag for configuration compatibility.
+
+The reporting thread owns its SQLite connections and Kafka outbox. Commands wake
+the reporter after execution. Account reads and Kafka delivery run independently
+of command polling. Authentication changes and financial writes are serialized.
+Worker timing events use UTC Unix milliseconds and monotonic elapsed milliseconds.
 
 `account-details` uses key `STAR-DONG` and includes account number `24`, USD cash,
 native per-currency cash, US positions, available share quantities, broker-reported per-share cost,
@@ -174,8 +179,8 @@ because its native mapping has not been verified.
 `order-status` uses KTrader schema v1 and key `["STAR-DONG","broker-order-id"]`.
 Snapshots include original creation time, observed update time, order state,
 quantity, cumulative fills, average fill price and command attribution. The
-reporter scans recent history plus older open orders and continues tracking old
-orders until their terminal outcome is observed. Missing orders are never
+reporter discovers active orders and tracks individual tickets until their
+terminal outcome is observed. Missing orders are never
 assumed canceled. Status and position fields follow the broker's published
 [OrderList](https://github.com/fosunwealth/fw-trading/blob/157c52fda8387c2ae658bb2010060df75d269f07/fosun_skills/fosun-trading/doc/OrderList.md)
 and [Holdings](https://github.com/fosunwealth/fw-trading/blob/157c52fda8387c2ae658bb2010060df75d269f07/fosun_skills/fosun-trading/doc/Holdings.md)
@@ -235,3 +240,13 @@ holdings use `cost` and `sellAble`; the OpenAPI wrapper uses `avgCost` and
 `sellable`. The adapter handles both and rejects conflicting aliases. Regression
 tests model case-sensitive server behavior and verify that populated native
 holdings survive through the Kafka snapshot payload.
+
+### Worker latency
+
+The listener emits JSON events named `broker_latency` to its service log.
+`command_received` records the Kafka timestamp, worker pickup timestamp and
+their difference in milliseconds. `command_execution`, `broker_request` and
+`report_delivery` record UTC Unix start/end milliseconds and monotonic
+`elapsed_ms`. A short hash of the command ID links related events. Broker
+timestamps retain their original precision. Pickup comparisons across hosts
+include any difference between their clocks.

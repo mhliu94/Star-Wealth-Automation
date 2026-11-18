@@ -1,5 +1,6 @@
 from datetime import date, datetime, timedelta
 import time
+import threading
 from zoneinfo import ZoneInfo
 from .auth import Auth
 from .errors import AuthenticationRequired, BrokerError, USER_SESSION_ERRORS, TRADE_SESSION_ERRORS, OutcomeUnknown, ProtocolError
@@ -11,6 +12,7 @@ from .transport import Transport
 
 class Client:
     def __init__(self, state, credentials=None, transport=None, persist=lambda: None):
+        self.session_lock = threading.RLock()
         self.state = state
         self.transport = transport or Transport(state["device"])
         self.auth = Auth(state, credentials or {}, self.transport, persist)
@@ -29,14 +31,19 @@ class Client:
     def read(self, operation, params):
         if operation not in {"orders", "holdings", "assets", "asset_summary", "bid_ask", "detail", "user_info", "market_status", "quote"}:
             raise ValueError("Not a read operation")
-        self.auth.ensure_user()
+        with self.session_lock:
+            self.auth.ensure_user()
+            user = dict(self.state["user"])
         for attempt in range(2):
             try:
-                return self.transport.call(operation, params, user=self.state["user"])
+                return self.transport.call(operation, params, user=user)
             except BrokerError as exc:
                 if exc.code not in USER_SESSION_ERRORS or attempt:
                     raise
-                self.auth.login()
+                with self.session_lock:
+                    if self.state["user"].get("session") == user.get("session"):
+                        self.auth.login()
+                    user = dict(self.state["user"])
 
     def orders(self, date=None, start=0, count=100):
         date = date or datetime.now(ZoneInfo("America/New_York")).date().isoformat()

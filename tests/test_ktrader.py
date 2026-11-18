@@ -322,3 +322,35 @@ def test_invalid_delivery_is_committed_without_broker_call(inbox):
     consume(consumer, worker, stop)
     assert len(consumer.commits) == 1
     assert worker.adapter.calls == []
+
+def test_report_io_cannot_block_command_pickup_or_execution(inbox):
+    from contextlib import contextmanager
+    from unittest.mock import Mock
+    from starwealth.report_loop import BackgroundReports
+    entered, release, stop = threading.Event(), threading.Event(), threading.Event()
+    import time
+    loop = Mock(next_refresh=time.time()+60)
+    def slow_tick():
+        entered.set()
+        assert release.wait(5)
+    loop.tick.side_effect = slow_tick
+    @contextmanager
+    def open_loop():
+        yield loop
+    reports = BackgroundReports(open_loop, stop)
+    reports.start()
+    try:
+        assert entered.wait(2)
+        adapter = Adapter()
+        payload = command(type="CANCEL_ORDER", order_id="mock-ticket")
+        class TwoPolls(Consumer):
+            def poll(self, timeout):
+                if self.commits:
+                    self.stop.set()
+                    return None
+                return self.message
+        consume(TwoPolls(json.dumps(payload).encode(), stop), listener(inbox, adapter), stop, reports)
+        assert adapter.calls == [payload]
+    finally:
+        release.set()
+        reports.close()

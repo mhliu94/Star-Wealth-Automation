@@ -71,6 +71,8 @@ def creation_time(row):
             if hours > 23 or minutes > 59:
                 raise ValueError()
             zone = timezone((1 if offset[1] == "+" else -1) * timedelta(hours=hours, minutes=minutes))
+        elif name in {"EST", "EDT"}:
+            zone = timezone(timedelta(hours=-5 if name == "EST" else -4))
         else:
             zone = ZoneInfo(name)
     except (ZoneInfoNotFoundError, ValueError) as exc:
@@ -127,3 +129,12 @@ def normalize_order(row, *, sub_account_id, observed_at=None, command_id=None, c
     result = validate_order(result)
     result["cancelable"] = type(row.get("canCancel")) is int and row["canCancel"] == 1 and raw_status in ACTIVE
     return result
+
+
+def exact_order_row(client, order_id):
+    identifier = str(order_id)
+    row = client.order_detail(identifier)
+    if (not isinstance(row, dict) or str(row.get("orderId")) != identifier
+            or row.get("subAccountId") != client.state["account"]["subAcctId"]):
+        raise ValueError("Order detail identity mismatch")
+    return row

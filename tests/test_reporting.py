@@ -375,3 +375,16 @@ def test_tracked_open_orders_persist_across_restart_until_terminal_observation(t
     # The latest normalized observation governs reconciliation even before delivery.
     assert second.db.execute("SELECT COUNT(*) FROM report_outbox").fetchone()[0] == 1
     second.close()
+
+def test_unobserved_ack_and_open_ticket_remain_tracked_across_restart(tmp_path):
+    first = reporter(tmp_path)
+    first.queue_order(order(order_id="done", status="FILLED", filled_quantity=10, quantity=10,
+                            average_fill_price=99, command_id="d"))
+    first.queue_order(order(order_id="open"))
+    first.close()
+    second = reporter(tmp_path)
+    try:
+        ack = {"done": {"command_id": "d"}, "just-sent": {"command_id": "new"}}
+        assert second.unresolved_order_ids(ack) == {"open", "just-sent"}
+    finally:
+        second.close()

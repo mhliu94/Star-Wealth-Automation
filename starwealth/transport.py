@@ -1,3 +1,4 @@
+from starwealth import latency
 import http.client
 import json
 import ssl
@@ -33,6 +34,7 @@ class Transport:
         self.device = device
         self.timeout = timeout
 
+    @latency.timed("broker_request", "call", arg=1)
     def call(self, operation, params, user=None, trade=None, request_id=None):
         host, path, mode = OPERATIONS[operation]
         method = "GET" if operation in {"user_info", "market_status"} else "POST"

@@ -3,8 +3,10 @@
 The API journal guards financial writes; the inbox also deduplicates rejected,
 delayed and control commands across Kafka redeliveries and process restarts.
 """
+from starwealth import latency
 from .kafka_security import connection_settings
 import argparse
+from contextlib import closing, contextmanager, nullcontext
 from datetime import datetime
 import hashlib
 import json
@@ -164,6 +166,8 @@ class Listener:
         # Log a digest, never arbitrary input, broker response, or credentials.
         tag = hashlib.sha256(command["command_id"].encode()).hexdigest()[:12]
         self.inbox.finish(command, "running")
+        execution_start = time.perf_counter_ns()
+        LOG.info("Command starting command=%s type=%s start_ms=%d", tag, command["type"], time.time_ns()//1_000_000)
         try:
             if self.clock() - due > self.max_age:
                 raise ValueError("Scheduled command is overdue; not executed after downtime")
@@ -176,7 +180,8 @@ class Listener:
             elif command["type"] not in {"CANCEL_OPEN_ORDERS", "CANCEL_ORDER"} and not self.inbox.enabled(self.string_id):
                 state = "disabled"
             else:
-                result = self.adapter.execute(command)
+                with latency.span("command_execution", command["type"], command):
+                    result = self.adapter.execute(command)
                 state = result["state"]
         except OutcomeUnknown:
             state = "unknown"
@@ -189,23 +194,27 @@ class Listener:
             state = "unknown"
             LOG.error("command=%s stopped with %s; inspect journal before another intent", tag, type(exc).__name__)
         self.inbox.finish(command, state)
-        LOG.info("command=%s state=%s account=%s account_num_id=%s", tag, state, self.string_id, self.numerical_id)
+        LOG.info("command=%s state=%s account=%s account_num_id=%s finished_ms=%d elapsed_ms=%.3f", tag, state,
+                 self.string_id, self.numerical_id, time.time_ns()//1_000_000, (time.perf_counter_ns()-execution_start)/1_000_000)
         return True
 
 
-def consume(consumer, listener, stop, reports=None):
+def consume(consumer, listener, stop, reports=None, session_lock=None, reconcile=None, interval=30):
     from confluent_kafka import KafkaError
+    next_reconcile = time.monotonic() + interval
     while not stop.is_set():
-        timeout = 1.0 if reports is None else max(0, min(1.0, reports.next_refresh - time.time()))
-        msg = consumer.poll(timeout)
+        msg = consumer.poll(1.0)
+        received_ms = time.time_ns() // 1_000_000
         if msg is not None:
             if msg.error():
                 if msg.error().code() != KafkaError._PARTITION_EOF:
                     LOG.warning("Kafka error code=%s", msg.error().code())
             else:
                 try:
-                    outcome = listener.accept(parse_message(msg.value()))
+                    command = parse_message(msg.value())
+                    outcome = listener.accept(command)
                     if outcome != "ignored":
+                        latency.received(command, msg, received_ms)
                         LOG.info("Kafka partition=%s offset=%s state=%s", msg.partition(), msg.offset(), outcome)
                 except (ValueError, UnicodeError, TypeError, OverflowError):
                     LOG.warning("Rejected invalid command partition=%s offset=%s", msg.partition(), msg.offset())
@@ -213,10 +222,16 @@ def consume(consumer, listener, stop, reports=None):
                 # terminate the listener without advancing Kafka's offset.
                 consumer.commit(message=msg, asynchronous=False)
         if not stop.is_set():
-            if listener.execute_due() and reports is not None:
+            with session_lock if session_lock is not None else nullcontext():
+                executed = listener.execute_due()
+                if reconcile is not None and time.monotonic() >= next_reconcile:
+                    next_reconcile = time.monotonic() + interval
+                    try:
+                        reconcile()
+                    except Exception as exc:
+                        LOG.error("Pending IOC reconciliation incomplete (%s)", type(exc).__name__)
+            if executed and reports is not None:
                 reports.after_command()
-            if reports is not None:
-                reports.tick()
 
 
 def parser():
@@ -277,8 +292,8 @@ def main():
                 return 0
             from confluent_kafka import Consumer, Producer
             from .reporting import Reporter
-            from .report_loop import ReportLoop
-            journal, inbox, consumer, adapter, reporter = None, None, None, None, None
+            from .report_loop import ReportLoop, BackgroundReports
+            journal, inbox, consumer, adapter, reports = None, None, None, None, None
             try:
                 journal = Journal(args.journal)
                 inbox = Inbox(args.inbox)
@@ -292,12 +307,20 @@ def main():
                     producer = Producer({**connection_settings(), "bootstrap.servers": args.bootstrap_servers,
                         "client.id": f"starwealth-reports-{args.numerical_id}",
                         "enable.idempotence": True, "acks": "all", "delivery.timeout.ms": 10000})
-                    reporter = Reporter(producer, args.inbox.with_name("ktrader-reports.sqlite3"),
-                        account_id=args.string_id, account_num_id=args.numerical_id,
-                        account_topic=args.account_topic, order_topic=args.order_topic, delivery_timeout=3)
-                    reports = ReportLoop(client, journal, reporter, lambda: inbox.enabled(args.string_id),
-                        interval=args.report_interval, lookback_days=args.report_lookback_days, reconcile=adapter.recover)
-                    reports.tick(force=True)
+                    @contextmanager
+                    def open_reports():
+                        with closing(Journal(args.journal)) as reader, closing(sqlite3.connect(
+                                args.inbox.resolve().as_uri() + "?mode=ro", uri=True)) as settings, closing(Reporter(
+                                producer, args.inbox.with_name("ktrader-reports.sqlite3"), account_id=args.string_id,
+                                account_num_id=args.numerical_id, account_topic=args.account_topic,
+                                order_topic=args.order_topic, delivery_timeout=3)) as reporter:
+                            def enabled():
+                                row = settings.execute("SELECT enabled FROM settings WHERE account=?", (args.string_id,)).fetchone()
+                                return bool(row[0]) if row else True
+                            yield ReportLoop(client, reader, reporter, enabled, interval=args.report_interval)
+                    adapter.recover()
+                    reports = BackgroundReports(open_reports, stop)
+                    reports.start()
                 consumer = Consumer({**connection_settings(), "bootstrap.servers": args.bootstrap_servers,
                     "group.id": args.consumer_group_id,
                     "client.id": f"starwealth-{args.numerical_id}",
@@ -307,12 +330,13 @@ def main():
                 consumer.subscribe([args.topic])
                 LOG.info("Listening topic=%s group=%s account=%s account_num_id=%s mode=%s",
                     args.topic, args.consumer_group_id, args.string_id, args.numerical_id, "live" if args.live else "dry-run")
-                consume(consumer, listener, stop, reports)
+                consume(consumer, listener, stop, reports, client.session_lock,
+                        adapter.recover if args.live else None, args.report_interval)
             finally:
                 if consumer is not None:
                     consumer.close()
-                if reporter is not None:
-                    reporter.close()
+                if reports is not None:
+                    reports.close()
                 if adapter is not None:
                     adapter.close()
                 if inbox is not None:

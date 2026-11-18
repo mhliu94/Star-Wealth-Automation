@@ -95,6 +95,8 @@ def test_malformed_or_implausible_epoch_is_not_replaced_with_observation(stamp):
 
 @pytest.mark.parametrize("submitted,zone,expected", [
     ("2026-10-29 08:00:00", "America/New_York", "2026-10-29T12:00:00Z"),
+    ("2026-10-29 08:00:00", "EDT", "2026-10-29T12:00:00Z"),
+    ("2026-11-18 10:47:16", "EST", "2026-11-18T15:47:16Z"),
     ("2026-10-29T20:00:00", "UTC+08:00", "2026-10-29T12:00:00Z"),
     ("2026-10-29T12:00:00Z", None, "2026-10-29T12:00:00Z"),
 ])
