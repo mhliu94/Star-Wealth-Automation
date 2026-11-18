@@ -37,6 +37,9 @@ class NativeBroker:
 
     def call(self, operation, params, **_):
         self.calls.append((operation, deepcopy(params)))
+        if operation == "bid_ask":
+            assert params["marketCode"] == "US"
+            return {"currency": "USD", "singleCashPurchasingPower": "123.45"}
         if operation == "asset_summary":
             return {"assetsBreakdown": {"USD": {"currency": "USD", "availableBalance": "123.45"}}}
         assert operation in {"holdings", "orders"}

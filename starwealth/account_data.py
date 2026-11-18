@@ -97,9 +97,16 @@ def account_snapshot(client, account_id, account_num_id, trading_enabled):
     cash = cash_balances(client.asset_summary())
     if "USD" not in cash:
         raise ProtocolError("Asset summary has no confirmed USD cash balance")
+    # BidAskInfo provides cash-only buying power in the ticket currency. The
+    # portfolio summary also includes converted and margin-backed buying power.
+    power = client.bid_ask("AAPL")
+    if not isinstance(power, dict) or power.get("currency") != "USD":
+        raise ProtocolError("US cash purchasing power has no confirmed USD route")
+    cash["USD"] = finite_number(power.get("singleCashPurchasingPower"), "USD cash purchasing power")
     state = getattr(client, "state", None)
     sub_account_id = state["account"]["subAcctId"] if isinstance(state, dict) else None
     positions = normalize_holdings(client.holdings(), sub_account_id=sub_account_id)
     return {"account_id": account_id, "account_num_id": account_num_id,
-            "cash": cash["USD"], "cash_by_currency": cash, "positions": positions,
+            "cash": cash["USD"], "cash_by_currency": cash, "available_cash_by_currency": {"USD": cash["USD"]},
+        "positions": positions,
             "ts": datetime.now(timezone.utc).isoformat(), "trading_enabled": trading_enabled}

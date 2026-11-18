@@ -88,14 +88,15 @@ def test_duplicate_positions_are_not_double_counted():
 def test_account_snapshot_has_routing_and_no_guessed_available_cash():
     class Broker:
         asset_summary = staticmethod(summary)
+        bid_ask = staticmethod(lambda _: {"currency":"USD", "singleCashPurchasingPower":"80.25", "maxPurchasePower":"5000"})
         holdings = staticmethod(lambda: [position()])
     data = account_snapshot(Broker(), "STAR-DONG", 24, True)
     assert data["account_id"] == "STAR-DONG"
     assert data["account_num_id"] == 24
-    assert data["cash"] == 123.45
+    assert data["cash"] == data["cash_by_currency"]["USD"] == 80.25
     assert data["positions"][0]["available_qty"] == 3
     assert data["trading_enabled"] is True
-    assert "available_cash_by_currency" not in data
+    assert data["available_cash_by_currency"] == {"USD": 80.25}
     assert datetime.fromisoformat(data["ts"]).tzinfo == timezone.utc
 
 

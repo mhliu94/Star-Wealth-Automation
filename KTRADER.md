@@ -170,11 +170,11 @@ Worker timing events use UTC Unix milliseconds and monotonic elapsed millisecond
 
 `account-details` uses key `STAR-DONG` and includes account number `24`, USD cash,
 native per-currency cash, US positions, available share quantities, broker-reported per-share cost,
-the persisted trading-enabled flag and observation timestamp. Cash comes from
-`AssetSummary.assetsBreakdown[currency].availableBalance`, verified in the
-broker's own asset UI. Converted total assets and margin purchasing power are
-never substituted for cash. A separate available-cash-for-trade field is omitted
-because its native mapping has not been verified.
+the persisted trading-enabled flag and observation timestamp. For USD, a read-only
+U.S. `BidAskInfo` request using AAPL supplies `singleCashPurchasingPower`.
+The reporter publishes that cash-only, single-currency amount in `cash`,
+`cash_by_currency.USD` and `available_cash_by_currency.USD`. Other currencies
+use their native `AssetSummary.assetsBreakdown[currency].availableBalance`.
 
 `order-status` uses KTrader schema v1 and key `["STAR-DONG","broker-order-id"]`.
 Snapshots include original creation time, observed update time, order state,
