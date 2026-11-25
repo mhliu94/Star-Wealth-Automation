@@ -121,12 +121,13 @@ Example KTrader limit command (set `ts` to the actual current UTC time):
 }
 ```
 
-Nextgen G, H and V sessions can submit ordinary DAY limit children. Each child
-carries its parent ID and a client order ID equal to its command ID. Broker
-acknowledgments link the exact ticket to that command for subsequent reports.
-The listener publishes confirmed child refusals through the durable reporting
-outbox. Ambiguous writes require broker evidence. The parent controls
-cancellation by exact ticket. A child deadline also prevents late submission.
+The worker executes the action, side, quantity, price and time-in-force in the
+command. Nextgen manages session strategy and selects the broker ticket for a
+child cancellation. The worker links each submission to its command ID and
+echoes an optional client order ID on reports. Parent and strategy labels are
+optional bookkeeping. The worker tracks its tickets, cancels unfilled remainders
+when requested, and publishes confirmed refusals through its durable outbox.
+Ambiguous writes require broker evidence. An explicit deadline prevents late submission.
 Existing GTC orders can be reported and canceled.
 
 ## Synthetic FOK and bulk cancellation

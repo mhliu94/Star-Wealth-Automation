@@ -11,6 +11,7 @@ import sqlite3
 import time
 
 from .errors import OutcomeUnknown
+from .journal import same_action
 from .orders import symbol
 
 TERMINAL = frozenset({"FILLED", "CANCELED", "REJECTED", "EXPIRED"})
@@ -106,7 +107,7 @@ class FokExecutor:
         digest = hashlib.sha256(payload.encode()).hexdigest()
         row = self._row(intent_id)
         if row is not None:
-            if row["digest"] != digest:
+            if row["digest"] != digest and not same_action(row["command"], command):
                 raise ValueError("FOK intent reused with different contents")
             return self._resume(row, expected)
 

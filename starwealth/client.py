@@ -201,7 +201,7 @@ class Client:
         for attempt in range(2):
             if deadline is not None and time.time() >= deadline:
                 journal.finish(intent_id, "rejected")
-                raise ValueError("Smart child deadline expired before submission")
+                raise ValueError("Order deadline expired before submission")
             try:
                 result = self.transport.call(operation, params, user=self.state["user"],
                                              trade=self.state["trade"], request_id=rid)

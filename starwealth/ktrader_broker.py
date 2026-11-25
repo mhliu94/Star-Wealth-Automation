@@ -17,14 +17,15 @@ from .order_data import exact_order_row, normalize_order
 
 
 SUPPORTED_ORDERS = frozenset({"MARKET_ORDER", "DELAYED_MARKET_ORDER", "LIMIT_ORDER"})
+LIMIT_ORDERS = frozenset({"LIMIT_ORDER", "LIMIT_ORDER_FOK", "LIMIT_ORDER_IOC"})
+SUBMISSIONS = SUPPORTED_ORDERS | LIMIT_ORDERS
 
 
-def smart_child(command):
-    parent = command.get("parent_id")
-    cid = command.get("client_order_id")
-    return (command.get("type") == "LIMIT_ORDER" and command.get("trading_mode") in ("G", "H", "V")
-            and isinstance(parent, str) and bool(parent.strip())
-            and isinstance(cid, str) and bool(cid.strip()) and cid == command.get("command_id"))
+def client_order_reference(command):
+    reference = command.get("client_order_id")
+    if isinstance(reference, str) and 0 < len(reference) <= 256 and reference == reference.strip():
+        return reference
+    return None
 
 
 def intent_id(command):
@@ -115,8 +116,6 @@ class BrokerAdapter:
             if self.fok.pending():
                 raise OutcomeUnknown("An earlier FOK remains unresolved; new submissions are paused")
         if is_timed_cancel:
-            if smart_child(command):
-                raise ValueError("Smart children require a controller-managed DAY limit")
             kind, tif = command.get("type"), command.get("time_in_force")
             if (tif not in (None, "DAY", "FOK", "IOC") or
                     (kind == "LIMIT_ORDER_FOK" and tif == "IOC") or
@@ -216,7 +215,7 @@ class BrokerAdapter:
             cap = min(cap, self.max_notional)
 
         if self.live:
-            self.journal.associate(identity, command["command_id"], command.get("client_order_id"))
+            self.journal.associate(identity, command["command_id"], client_order_reference(command))
         if self.stop_requested():
             raise ValueError("Shutdown requested before order submission")
         options = {}
@@ -269,6 +268,10 @@ class BrokerAdapter:
         raise OutcomeUnknown("Cancellation remains unconfirmed; inspect broker reports")
 
     def cancel_open_orders(self, command):
+        # Legacy scoped sweep requests must never expand into an account-wide cancel.
+        if any(command.get(k) is not None for k in
+               ("order_id", "order_reference", "client_order_id", "parent_id", "trading_mode", "deadline")):
+            raise ValueError("Scoped cancellation requires CANCEL_ORDER with the exact broker order_id")
         self._validate_execution_options(command)
         identity = intent_id(command)
         target = command.get("symbol")
@@ -326,22 +329,14 @@ class BrokerAdapter:
 
     @staticmethod
     def _validate_execution_options(command):
-        child = smart_child(command)
-        if child:
-            mode = command["trading_mode"]
-            if (mode == "G" and command.get("side") != "SELL") or (mode == "H" and command.get("side") != "BUY"):
-                raise ValueError("Smart child side conflicts with its controller")
-        elif (command.get("trading_mode") in ("G", "H", "V") or command.get("parent_id") is not None
-              or command.get("client_order_id") is not None):
-            raise ValueError("Smart orders require an attributed ordinary limit child")
         if command.get("cancel_unfilled") is not None and command["cancel_unfilled"] is not False:
             raise ValueError("cancel_unfilled is unsupported")
         tif = command.get("time_in_force")
         if tif is not None and tif != "DAY":
             raise ValueError("Only DAY time_in_force is supported by the Kafka adapter")
         if command.get("deadline") is not None:
-            if not child or not isinstance(command["deadline"], str):
-                raise ValueError("Only Smart parents manage a child deadline")
+            if not isinstance(command["deadline"], str):
+                raise ValueError("Order deadline must be a timestamp with a timezone")
             deadline = datetime.fromisoformat(command["deadline"].replace("Z", "+00:00"))
             if deadline.utcoffset() is None or deadline.timestamp() <= time.time():
-                raise ValueError("Smart child deadline expired or has no timezone")
+                raise ValueError("Order deadline expired or has no timezone")

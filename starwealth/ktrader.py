@@ -21,8 +21,8 @@ import time
 
 from .client import Client
 from .errors import OutcomeUnknown, StarWealthError
-from .journal import Journal
-from .ktrader_broker import BrokerAdapter, intent_id, smart_child
+from .journal import Journal, same_action
+from .ktrader_broker import BrokerAdapter, LIMIT_ORDERS, SUBMISSIONS, client_order_reference, intent_id
 from .reporting import validate_order
 from .storage import profile_lock
 
@@ -112,9 +112,9 @@ class Inbox:
         payload = json.dumps(command, sort_keys=True, separators=(",", ":"), allow_nan=False)
         digest = hashlib.sha256(payload.encode()).hexdigest()
         account, cid = command["account_id"], command["command_id"]
-        prior = self.db.execute("SELECT digest,state FROM commands WHERE account=? AND id=?", (account, cid)).fetchone()
+        prior = self.db.execute("SELECT digest,payload FROM commands WHERE account=? AND id=?", (account, cid)).fetchone()
         if prior:
-            if prior[0] != digest:
+            if prior[0] != digest and not same_action(prior[1], command):
                 raise ValueError("command_id reused with different contents")
             return False
         with self.db:
@@ -153,7 +153,7 @@ class Listener:
         self.max_age, self.clock = max_age, clock
 
     def rejection(self, command, reason):
-        if not smart_child(command) or not self.adapter.live:
+        if command.get("type") not in SUBMISSIONS or not self.adapter.live:
             return None
         # An accepted, pending or ambiguous write must be resolved by broker evidence.
         prior = self.adapter.journal.get(intent_id(command))
@@ -163,13 +163,23 @@ class Listener:
         digest = hashlib.sha256((self.string_id + "\0" + cid).encode()).hexdigest()
         observed = max(self.clock(), timestamp(command["ts"]))
         try:
-            return validate_order(dict(order_id="local-rejection:" + digest, command_id=cid,
-                client_order_id=cid, created_at=command["ts"], updated_at=datetime.fromtimestamp(observed, timezone.utc).isoformat(),
-                symbol=command["symbol"], side=command["side"], order_type="LIMIT", status="REJECTED",
-                quantity=float(command["qty_shares"]), filled_quantity=0, average_fill_price=None,
-                limit_price=float(command["limit_price"]), message=reason[:2000]))
+            is_limit = command["type"] in LIMIT_ORDERS
+            snapshot = dict(order_id="local-rejection:" + digest, command_id=cid, created_at=command["ts"],
+                updated_at=datetime.fromtimestamp(observed, timezone.utc).isoformat(), symbol=command["symbol"],
+                side=command["side"], order_type="LIMIT" if is_limit else "MARKET", status="REJECTED",
+                quantity=None, filled_quantity=0, average_fill_price=None, message=reason[:2000])
+            if command.get("qty_shares") is not None:
+                snapshot["quantity"] = float(command["qty_shares"])
+            elif not is_limit:
+                snapshot["notional"] = float(command["notional_usd"])
+            if is_limit:
+                snapshot["limit_price"] = float(command["limit_price"])
+            reference = client_order_reference(command)
+            if reference is not None:
+                snapshot["client_order_id"] = reference
+            return validate_order(snapshot)
         except (KeyError, ValueError, TypeError, OverflowError):
-            LOG.warning("Invalid Smart order fields prevent correlated rejection feedback")
+            LOG.warning("Invalid order fields prevent correlated rejection feedback")
             return None
 
     def accept(self, command):
@@ -183,10 +193,10 @@ class Listener:
         now = self.clock()
         issued = timestamp(command.get("ts"))
         stale = now - issued > self.max_age
-        if now - issued < -30 or (stale and not smart_child(command)):
-            raise ValueError("Command is stale or timestamp is in the future")
         if not isinstance(command.get("type"), str):
             raise ValueError("Command type is required")
+        if now - issued < -30 or (stale and command["type"] not in SUBMISSIONS):
+            raise ValueError("Command is stale or timestamp is in the future")
         due = now
         if command["type"] == "DELAYED_MARKET_ORDER":
             due = timestamp(command["execute_at"]) if command.get("execute_at") else now + positive_seconds(command.get("delay_seconds"))
@@ -225,6 +235,8 @@ class Listener:
                 with latency.span("command_execution", command["type"], command):
                     result = self.adapter.execute(command)
                 state = result["state"]
+                if state == "rejected" and not result.get("order_id"):
+                    rejection = self.rejection(command, "Order rejected before a broker ticket was created")
         except OutcomeUnknown:
             state = "unknown"
             LOG.error("command=%s outcome unknown; reconcile broker orders and journal before another intent", tag)

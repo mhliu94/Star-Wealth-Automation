@@ -63,6 +63,7 @@ def test_immediate_fill_never_cancels_and_replay_never_resubmits(tmp_path):
     assert result == {"state": "acknowledged", "order_id": "broker-1", "status": "FILLED"}
     assert broker.events == [("submit", "intent"), ("detail", "broker-1")]
     assert executor.execute(COMMAND, "intent") == result
+    assert executor.execute({**COMMAND, "trading_mode":"another", "parent_id":"optional"}, "intent") == result
     assert len(actions(broker, "submit")) == 1
     assert executor.pending() == []
     executor.close()

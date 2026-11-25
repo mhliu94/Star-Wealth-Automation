@@ -24,6 +24,7 @@ def command(**changes):
 
 
 class Adapter:
+    live = False
     def __init__(self, error=None):
         self.calls = []
         self.error = error
@@ -119,6 +120,31 @@ def test_duplicate_id_with_changed_contents_is_rejected(inbox):
     assert inbox.due("STAR-DONG", NOW)[0]["qty_shares"] == 1
 
 
+def test_redelivery_with_different_bookkeeping_never_executes_twice(inbox):
+    worker = listener(inbox)
+    initial = command(type="LIMIT_ORDER", limit_price=1.98, client_order_id="first")
+    assert worker.accept(initial) == "queued"
+    assert worker.accept({**initial, "parent_id":"p", "trading_mode":"H", "client_order_id":"other"}) == "duplicate"
+    assert worker.execute_due()
+    assert worker.adapter.calls == [initial]
+    assert not worker.execute_due()
+
+
+@pytest.mark.parametrize("kind", ["LIMIT_ORDER", "LIMIT_ORDER_IOC", "LIMIT_ORDER_FOK", "MARKET_ORDER"])
+def test_unlabelled_stale_submission_reports_its_command_id(inbox, kind):
+    from unittest.mock import Mock
+    adapter = Adapter()
+    adapter.live, adapter.journal = True, Mock()
+    adapter.journal.get.return_value = None
+    payload = command(type=kind, ts=iso(NOW-301))
+    if kind != "MARKET_ORDER":
+        payload["limit_price"] = 1.98
+    assert listener(inbox, adapter).accept(payload) == "rejected"
+    report = json.loads(inbox.db.execute("SELECT snapshot FROM child_rejections").fetchone()[0])
+    assert report["status"] == "REJECTED" and report["command_id"] == "command-1"
+    assert "client_order_id" not in report
+
+
 def test_crash_during_execution_is_unknown_and_never_retried(tmp_path):
     path = tmp_path / "inbox.sqlite3"
     first = Inbox(path)
@@ -149,7 +175,7 @@ def test_uncertain_outcome_is_persisted_without_replay(inbox, error):
     assert len(adapter.calls) == 1
 
 
-@pytest.mark.parametrize("bad_ts", [None, "not-a-time", "2026-10-29T12:00:00", iso(NOW - 301), iso(NOW + 31)])
+@pytest.mark.parametrize("bad_ts", [None, "not-a-time", "2026-10-29T12:00:00", iso(NOW + 31)])
 def test_invalid_stale_or_future_timestamp_never_queues(inbox, bad_ts):
     with pytest.raises(ValueError):
         listener(inbox).accept(command(ts=bad_ts))

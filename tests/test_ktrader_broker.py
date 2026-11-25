@@ -161,17 +161,17 @@ def test_live_redelivery_cannot_resubmit_even_after_adapter_restart(journal):
     assert len(broker.submitted) == 1
 
 
-@pytest.mark.parametrize("mode,side", [("G","SELL"), ("H","BUY"), ("V","BUY"), ("V","SELL")])
-def test_smart_child_uses_regular_limit_submission_and_correlated_feedback(journal, mode, side):
+@pytest.mark.parametrize("labels", [{}, {"trading_mode":"G"}, {"trading_mode":"future-strategy","parent_id":"parent"}])
+def test_limit_executes_with_or_without_session_metadata(journal, labels):
     broker = Broker()
     adapter = BrokerAdapter(broker, journal, live=True)
-    child = command(type="LIMIT_ORDER", side=side, trading_mode=mode, parent_id="parent",
-                    client_order_id="order-1", limit_price=1.98, time_in_force="DAY")
+    child = command(type="LIMIT_ORDER", side="BUY", client_order_id="client-ref",
+                    limit_price=1.98, time_in_force="DAY", **labels)
     result = adapter.execute(child)
     assert result["order_id"] == "private-order"
     assert broker.submitted[0][0].price == "1.98"
     assert journal.order_correlations() == {
-        "private-order": {"command_id":"order-1", "client_order_id":"order-1"}}
+        "private-order": {"command_id":"order-1", "client_order_id":"client-ref"}}
 
 
 def test_delayed_orders_share_market_semantics(journal):
@@ -190,10 +190,9 @@ def test_intents_are_stable_bounded_and_account_scoped():
 
 
 @pytest.mark.parametrize("option", [
-    {"trading_mode": "G"}, {"parent_id": "parent"}, {"client_order_id": "child"},
     {"cancel_unfilled": True}, {"cancel_unfilled": "false"},
     {"time_in_force": "FOK"}, {"time_in_force": "IOC"}, {"time_in_force": "GTC"},
-    {"deadline": "2099-01-01T00:00:00Z"},
+    {"deadline": "2000-01-01T00:00:00Z"},
 ])
 def test_unsupported_execution_constraints_rejected_before_reads(journal, option):
     broker = Broker()
@@ -208,7 +207,8 @@ def test_ioc_limit_selects_exact_order_timed_cancel(journal):
     adapter.live = True
     adapter.fok = Mock()
     adapter.fok.pending.return_value = []
-    order = command(type="LIMIT_ORDER_IOC", time_in_force="IOC", cancel_unfilled=True, qty_shares=100, limit_price=10)
+    order = command(type="LIMIT_ORDER_IOC", time_in_force="IOC", cancel_unfilled=True, qty_shares=100,
+                    limit_price=10, trading_mode="H", parent_id="parent", client_order_id="order-1")
     adapter.execute(order)
     canonical, key = adapter.fok.execute.call_args.args
     assert canonical["type"] == "LIMIT_ORDER_FOK"  # Stable persisted fingerprint.

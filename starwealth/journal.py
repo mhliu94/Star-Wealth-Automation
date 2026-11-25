@@ -1,10 +1,22 @@
 import hashlib
+import json
 from pathlib import Path
 import sqlite3
 import time
 import uuid
 from .crypto import compact
 from .errors import DuplicateIntent
+
+
+def same_action(stored_payload, command):
+    """Compare a redelivery to the original action, including legacy journal rows."""
+    if command.get("type") == "CANCEL_OPEN_ORDERS":
+        return False  # The original full digest must match for a legacy bulk request.
+    def action_payload(value):
+        return json.dumps({k: v for k, v in value.items() if k not in
+                           ("parent_id", "trading_mode", "session_id", "client_order_id")},
+                          sort_keys=True, separators=(",", ":"), allow_nan=False)
+    return action_payload(json.loads(stored_payload)) == action_payload(command)
 
 
 class Journal:
