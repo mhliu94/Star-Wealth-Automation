@@ -34,7 +34,7 @@ class Broker:
         plan = self.prepare(order, max_notional=max_notional)
         if live:
             journal.reserve(intent_id, "create", {"quantity": order.quantity})
-            journal.finish(intent_id, "acknowledged")
+            journal.finish(intent_id, "acknowledged", {"orderId":"private-order"})
             return {"orderId": "private-order", "accountId": "private-account", "session": "private-session"}
         return plan
 
@@ -159,6 +159,19 @@ def test_live_redelivery_cannot_resubmit_even_after_adapter_restart(journal):
         BrokerAdapter(broker, journal, live=True).execute(command())
     assert broker.reads == reads
     assert len(broker.submitted) == 1
+
+
+@pytest.mark.parametrize("mode,side", [("G","SELL"), ("H","BUY"), ("V","BUY"), ("V","SELL")])
+def test_smart_child_uses_regular_limit_submission_and_correlated_feedback(journal, mode, side):
+    broker = Broker()
+    adapter = BrokerAdapter(broker, journal, live=True)
+    child = command(type="LIMIT_ORDER", side=side, trading_mode=mode, parent_id="parent",
+                    client_order_id="order-1", limit_price=1.98, time_in_force="DAY")
+    result = adapter.execute(child)
+    assert result["order_id"] == "private-order"
+    assert broker.submitted[0][0].price == "1.98"
+    assert journal.order_correlations() == {
+        "private-order": {"command_id":"order-1", "client_order_id":"order-1"}}
 
 
 def test_delayed_orders_share_market_semantics(journal):

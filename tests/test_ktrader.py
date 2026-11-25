@@ -52,6 +52,46 @@ def recorded_state(inbox, cid="command-1"):
     return row[0] if row else None
 
 
+@pytest.mark.parametrize("cause", ["validation", "disabled", "stale", "uncertain", "pending"])
+def test_live_child_rejection_delivery_survives_restart_and_never_guesses(tmp_path, cause):
+    from unittest.mock import Mock
+    from starwealth.journal import Journal
+    from starwealth.ktrader_broker import intent_id
+    from starwealth.reporting import Reporter
+
+    child = command(type="LIMIT_ORDER", trading_mode="H", parent_id="parent", client_order_id="command-1",
+                    qty_shares=1003, limit_price=1.98, ts=iso(NOW-301 if cause == "stale" else NOW))
+    journal = Journal(tmp_path / "orders")
+    inbox = Inbox(tmp_path / "inbox")
+    adapter = Adapter(OutcomeUnknown("ambiguous") if cause == "uncertain" else ValueError("refused"))
+    adapter.live, adapter.journal = True, journal
+    if cause == "pending":
+        journal.reserve(intent_id(child), "create", {})
+    if cause == "disabled":
+        inbox.set_enabled("STAR-DONG", False)
+    worker = listener(inbox, adapter)
+    worker.accept(child)
+    worker.execute_due()
+    assert worker.accept(child) == "duplicate"
+    inbox.close()
+    inbox = Inbox(tmp_path / "inbox")
+    reporter = Reporter(Mock(), tmp_path / "reports", account_id="STAR-DONG", account_num_id=24)
+    try:
+        Inbox.queue_rejections(inbox.db, reporter)
+        Inbox.queue_rejections(inbox.db, reporter)
+        payloads = [json.loads(row[0]) for row in reporter.db.execute("SELECT payload FROM report_outbox")]
+        if cause in ("pending", "uncertain"):
+            assert payloads == []
+        else:
+            report, = payloads
+            assert (report["client_order_id"], report["status"], report["filled_quantity"]) == ("command-1", "REJECTED", 0)
+            assert report["quantity"] == 1003 and report["limit_price"] == 1.98
+    finally:
+        reporter.close()
+        inbox.close()
+        journal.close()
+
+
 def test_command_survives_restart_and_duplicate_does_not_execute_twice(tmp_path):
     path = tmp_path / "inbox.sqlite3"
     first = Inbox(path)
@@ -302,7 +342,7 @@ def test_consumer_commits_only_after_inbox_is_durable(tmp_path):
 
 
 def test_database_failure_does_not_commit_delivery(inbox, monkeypatch):
-    def fail_add(*_):
+    def fail_add(*_, **kwargs):
         raise sqlite3.OperationalError("disk full")
 
     monkeypatch.setattr(inbox, "add", fail_add)

@@ -7,7 +7,7 @@ from starwealth import latency
 from .kafka_security import connection_settings
 import argparse
 from contextlib import closing, contextmanager, nullcontext
-from datetime import datetime
+from datetime import datetime, timezone
 import hashlib
 import json
 import logging
@@ -22,7 +22,8 @@ import time
 from .client import Client
 from .errors import OutcomeUnknown, StarWealthError
 from .journal import Journal
-from .ktrader_broker import BrokerAdapter
+from .ktrader_broker import BrokerAdapter, intent_id, smart_child
+from .reporting import validate_order
 from .storage import profile_lock
 
 LOG = logging.getLogger("starwealth.ktrader")
@@ -88,6 +89,8 @@ class Inbox:
             account TEXT, id TEXT, digest TEXT NOT NULL, payload TEXT NOT NULL,
             due REAL NOT NULL, state TEXT NOT NULL, PRIMARY KEY(account,id))""")
         self.db.execute("CREATE TABLE IF NOT EXISTS settings (account TEXT PRIMARY KEY, enabled INTEGER NOT NULL)")
+        self.db.execute("""CREATE TABLE IF NOT EXISTS child_rejections (
+            account TEXT, id TEXT, snapshot TEXT NOT NULL, PRIMARY KEY(account,id))""")
         # A crash during execution must never automatically resubmit a write.
         recovered = self.db.execute("UPDATE commands SET state='unknown' WHERE state='running'").rowcount
         self.db.commit()
@@ -105,7 +108,7 @@ class Inbox:
         with self.db:
             self.db.execute("INSERT OR REPLACE INTO settings VALUES (?,?)", (account, int(enabled)))
 
-    def add(self, command, due):
+    def add(self, command, due, *, state="queued", rejection=None):
         payload = json.dumps(command, sort_keys=True, separators=(",", ":"), allow_nan=False)
         digest = hashlib.sha256(payload.encode()).hexdigest()
         account, cid = command["account_id"], command["command_id"]
@@ -115,12 +118,28 @@ class Inbox:
                 raise ValueError("command_id reused with different contents")
             return False
         with self.db:
-            self.db.execute("INSERT INTO commands VALUES (?,?,?,?,?,?)", (account, cid, digest, payload, due, "queued"))
+            self.db.execute("INSERT INTO commands VALUES (?,?,?,?,?,?)", (account, cid, digest, payload, due, state))
+            self._store_rejection(command, rejection)
         return True
 
-    def finish(self, command, state):
+    def _store_rejection(self, command, rejection):
+        if rejection is not None:
+            self.db.execute("INSERT OR IGNORE INTO child_rejections VALUES (?,?,?)",
+                            (command["account_id"], command["command_id"], json.dumps(rejection)))
+
+    def finish(self, command, state, *, rejection=None):
         with self.db:
             self.db.execute("UPDATE commands SET state=? WHERE account=? AND id=?", (state, command["account_id"], command["command_id"]))
+            self._store_rejection(command, rejection)
+
+    @staticmethod
+    def queue_rejections(db, reporter):
+        rows = db.execute("SELECT id,snapshot FROM child_rejections WHERE account=? LIMIT 100",
+                          (reporter.account_id,)).fetchall()
+        for cid, snapshot in rows:
+            reporter.queue_order(json.loads(snapshot))
+            with db:
+                db.execute("DELETE FROM child_rejections WHERE account=? AND id=?", (reporter.account_id, cid))
 
     def due(self, account, now):
         row = self.db.execute("SELECT payload,due FROM commands WHERE account=? AND state='queued' AND due<=? ORDER BY due,rowid LIMIT 1", (account, now)).fetchone()
@@ -133,6 +152,26 @@ class Listener:
         self.string_id, self.numerical_id = string_id, numerical_id
         self.max_age, self.clock = max_age, clock
 
+    def rejection(self, command, reason):
+        if not smart_child(command) or not self.adapter.live:
+            return None
+        # An accepted, pending or ambiguous write must be resolved by broker evidence.
+        prior = self.adapter.journal.get(intent_id(command))
+        if prior and prior["state"] != "rejected":
+            return None
+        cid = command["command_id"]
+        digest = hashlib.sha256((self.string_id + "\0" + cid).encode()).hexdigest()
+        observed = max(self.clock(), timestamp(command["ts"]))
+        try:
+            return validate_order(dict(order_id="local-rejection:" + digest, command_id=cid,
+                client_order_id=cid, created_at=command["ts"], updated_at=datetime.fromtimestamp(observed, timezone.utc).isoformat(),
+                symbol=command["symbol"], side=command["side"], order_type="LIMIT", status="REJECTED",
+                quantity=float(command["qty_shares"]), filled_quantity=0, average_fill_price=None,
+                limit_price=float(command["limit_price"]), message=reason[:2000]))
+        except (KeyError, ValueError, TypeError, OverflowError):
+            LOG.warning("Invalid Smart order fields prevent correlated rejection feedback")
+            return None
+
     def accept(self, command):
         if command.get("account_id") != self.string_id:
             return "ignored"
@@ -143,7 +182,8 @@ class Listener:
             raise ValueError("command_id must contain 1-256 characters")
         now = self.clock()
         issued = timestamp(command.get("ts"))
-        if not -30 <= now - issued <= self.max_age:
+        stale = now - issued > self.max_age
+        if now - issued < -30 or (stale and not smart_child(command)):
             raise ValueError("Command is stale or timestamp is in the future")
         if not isinstance(command.get("type"), str):
             raise ValueError("Command type is required")
@@ -151,12 +191,12 @@ class Listener:
         if command["type"] == "DELAYED_MARKET_ORDER":
             due = timestamp(command["execute_at"]) if command.get("execute_at") else now + positive_seconds(command.get("delay_seconds"))
             due = max(now, due)
-        if not self.inbox.add(command, due):
-            return "duplicate"
-        if command["type"] not in {"SET_TRADING_ENABLED", "CANCEL_OPEN_ORDERS", "CANCEL_ORDER"} and not self.inbox.enabled(self.string_id):
-            self.inbox.finish(command, "disabled")
-            return "disabled"
-        return "queued"
+        state, rejection = "queued", None
+        if stale:
+            state, rejection = "rejected", self.rejection(command, "Command expired before execution")
+        elif command["type"] not in {"SET_TRADING_ENABLED", "CANCEL_OPEN_ORDERS", "CANCEL_ORDER"} and not self.inbox.enabled(self.string_id):
+            state, rejection = "disabled", self.rejection(command, "Trading disabled before execution")
+        return state if self.inbox.add(command, due, state=state, rejection=rejection) else "duplicate"
 
     def execute_due(self):
         item = self.inbox.due(self.string_id, self.clock())
@@ -167,6 +207,7 @@ class Listener:
         tag = hashlib.sha256(command["command_id"].encode()).hexdigest()[:12]
         self.inbox.finish(command, "running")
         execution_start = time.perf_counter_ns()
+        rejection = None
         LOG.info("Command starting command=%s type=%s start_ms=%d", tag, command["type"], time.time_ns()//1_000_000)
         try:
             if self.clock() - due > self.max_age:
@@ -179,6 +220,7 @@ class Listener:
                 state = "enabled" if enabled else "disabled"
             elif command["type"] not in {"CANCEL_OPEN_ORDERS", "CANCEL_ORDER"} and not self.inbox.enabled(self.string_id):
                 state = "disabled"
+                rejection = self.rejection(command, "Trading disabled before execution")
             else:
                 with latency.span("command_execution", command["type"], command):
                     result = self.adapter.execute(command)
@@ -188,12 +230,13 @@ class Listener:
             LOG.error("command=%s outcome unknown; reconcile broker orders and journal before another intent", tag)
         except (StarWealthError, ValueError) as exc:
             state = "rejected"
+            rejection = self.rejection(command, str(exc))
             # Library validation messages contain no secrets; don't log arbitrary exceptions.
             LOG.warning("command=%s rejected: %s", tag, exc)
         except Exception as exc:
             state = "unknown"
             LOG.error("command=%s stopped with %s; inspect journal before another intent", tag, type(exc).__name__)
-        self.inbox.finish(command, state)
+        self.inbox.finish(command, state, rejection=rejection)
         LOG.info("command=%s state=%s account=%s account_num_id=%s finished_ms=%d elapsed_ms=%.3f", tag, state,
                  self.string_id, self.numerical_id, time.time_ns()//1_000_000, (time.perf_counter_ns()-execution_start)/1_000_000)
         return True
@@ -310,14 +353,15 @@ def main():
                     @contextmanager
                     def open_reports():
                         with closing(Journal(args.journal)) as reader, closing(sqlite3.connect(
-                                args.inbox.resolve().as_uri() + "?mode=ro", uri=True)) as settings, closing(Reporter(
+                                args.inbox.resolve().as_uri() + "?mode=rw", uri=True)) as settings, closing(Reporter(
                                 producer, args.inbox.with_name("ktrader-reports.sqlite3"), account_id=args.string_id,
                                 account_num_id=args.numerical_id, account_topic=args.account_topic,
                                 order_topic=args.order_topic, delivery_timeout=3)) as reporter:
                             def enabled():
                                 row = settings.execute("SELECT enabled FROM settings WHERE account=?", (args.string_id,)).fetchone()
                                 return bool(row[0]) if row else True
-                            yield ReportLoop(client, reader, reporter, enabled, interval=args.report_interval)
+                            yield ReportLoop(client, reader, reporter, enabled, interval=args.report_interval,
+                                queue_rejections=lambda: Inbox.queue_rejections(settings, reporter))
                     adapter.recover()
                     reports = BackgroundReports(open_reports, stop)
                     reports.start()

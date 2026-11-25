@@ -12,10 +12,11 @@ LOG = logging.getLogger("starwealth.reporting")
 
 
 class ReportLoop:
-    def __init__(self, client, journal, reporter, enabled, *, interval=30, lookback_days=90, clock=time.time, reconcile=None):
+    def __init__(self, client, journal, reporter, enabled, *, interval=30, lookback_days=90, clock=time.time, reconcile=None, queue_rejections=None):
         self.client, self.journal, self.reporter, self.enabled = client, journal, reporter, enabled
         self.interval, self.lookback_days, self.clock = interval, lookback_days, clock
         self.reconcile = reconcile
+        self.queue_rejections = queue_rejections
         self.next_refresh = 0
         self.next_account = 0
         self.next_reconcile = 0
@@ -36,6 +37,11 @@ class ReportLoop:
         account_ok, order_count = False, 0
         observations = []
         try:
+            if self.queue_rejections:
+                try:
+                    self.queue_rejections()
+                except Exception as exc:
+                    LOG.error("Child rejection delivery deferred (%s)", type(exc).__name__)
             if self.reconcile is not None and self.clock() >= self.next_reconcile:
                 self.next_reconcile = self.clock() + self.interval
                 try:

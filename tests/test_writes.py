@@ -34,6 +34,19 @@ def test_pending_intent_survives_restart(tmp_path):
     finally: reopened.close()
 
 
+def test_smart_deadline_expiring_before_write_is_definitively_rejected(tmp_path, state):
+    from unittest.mock import Mock
+    transport = Mock()
+    journal = Journal(tmp_path / "journal")
+    try:
+        with pytest.raises(ValueError, match="deadline expired"):
+            Client(state, transport=transport)._write("create", {}, journal, "expired", deadline=0)
+        transport.call.assert_not_called()
+        assert journal.get("expired")["state"] == "rejected"
+    finally:
+        journal.close()
+
+
 def test_auth_rejection_refreshes_then_retries_once(tmp_path,state):
     class Transport:
         calls=[]

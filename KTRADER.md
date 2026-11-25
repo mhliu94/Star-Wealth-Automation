@@ -121,10 +121,13 @@ Example KTrader limit command (set `ts` to the actual current UTC time):
 }
 ```
 
-Currency conversion, algorithmic commands, Smart Selling G child orders, IOC,
-GTC creation and automatic deadline cancellation remain unsupported. Such
-constraints are rejected before placing or bulk-canceling orders. Existing GTC
-orders can be reported and canceled.
+Nextgen G, H and V sessions can submit ordinary DAY limit children. Each child
+carries its parent ID and a client order ID equal to its command ID. Broker
+acknowledgments link the exact ticket to that command for subsequent reports.
+The listener publishes confirmed child refusals through the durable reporting
+outbox. Ambiguous writes require broker evidence. The parent controls
+cancellation by exact ticket. A child deadline also prevents late submission.
+Existing GTC orders can be reported and canceled.
 
 ## Synthetic FOK and bulk cancellation
 

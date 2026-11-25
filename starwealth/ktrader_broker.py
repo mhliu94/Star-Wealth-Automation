@@ -9,6 +9,7 @@ from decimal import Decimal, ROUND_FLOOR
 import hashlib
 import json
 import time
+from datetime import datetime
 
 from .orders import Order, number, symbol
 from .errors import OutcomeUnknown, StarWealthError
@@ -16,6 +17,14 @@ from .order_data import exact_order_row, normalize_order
 
 
 SUPPORTED_ORDERS = frozenset({"MARKET_ORDER", "DELAYED_MARKET_ORDER", "LIMIT_ORDER"})
+
+
+def smart_child(command):
+    parent = command.get("parent_id")
+    cid = command.get("client_order_id")
+    return (command.get("type") == "LIMIT_ORDER" and command.get("trading_mode") in ("G", "H", "V")
+            and isinstance(parent, str) and bool(parent.strip())
+            and isinstance(cid, str) and bool(cid.strip()) and cid == command.get("command_id"))
 
 
 def intent_id(command):
@@ -106,6 +115,8 @@ class BrokerAdapter:
             if self.fok.pending():
                 raise OutcomeUnknown("An earlier FOK remains unresolved; new submissions are paused")
         if is_timed_cancel:
+            if smart_child(command):
+                raise ValueError("Smart children require a controller-managed DAY limit")
             kind, tif = command.get("type"), command.get("time_in_force")
             if (tif not in (None, "DAY", "FOK", "IOC") or
                     (kind == "LIMIT_ORDER_FOK" and tif == "IOC") or
@@ -208,8 +219,11 @@ class BrokerAdapter:
             self.journal.associate(identity, command["command_id"], command.get("client_order_id"))
         if self.stop_requested():
             raise ValueError("Shutdown requested before order submission")
+        options = {}
+        if command.get("deadline") is not None:
+            options["deadline"] = datetime.fromisoformat(command["deadline"].replace("Z", "+00:00")).timestamp()
         result = self.client.submit(order, journal=self.journal, intent_id=identity,
-                                    live=self.live, max_notional=decimal_text(cap))
+                                    live=self.live, max_notional=decimal_text(cap), **options)
         outcome = {
             "state": "acknowledged" if self.live else "dry_run",
             "intent_id": identity, "symbol": stock, "side": side,
@@ -312,14 +326,22 @@ class BrokerAdapter:
 
     @staticmethod
     def _validate_execution_options(command):
-        if command.get("trading_mode") == "G":
-            raise ValueError("Smart selling mode G requires order feedback and is unsupported")
-        if command.get("parent_id") is not None or command.get("client_order_id") is not None:
-            raise ValueError("Smart selling child-order commands require order feedback and are unsupported")
+        child = smart_child(command)
+        if child:
+            mode = command["trading_mode"]
+            if (mode == "G" and command.get("side") != "SELL") or (mode == "H" and command.get("side") != "BUY"):
+                raise ValueError("Smart child side conflicts with its controller")
+        elif (command.get("trading_mode") in ("G", "H", "V") or command.get("parent_id") is not None
+              or command.get("client_order_id") is not None):
+            raise ValueError("Smart orders require an attributed ordinary limit child")
         if command.get("cancel_unfilled") is not None and command["cancel_unfilled"] is not False:
             raise ValueError("cancel_unfilled is unsupported")
         tif = command.get("time_in_force")
         if tif is not None and tif != "DAY":
             raise ValueError("Only DAY time_in_force is supported by the Kafka adapter")
         if command.get("deadline") is not None:
-            raise ValueError("Order deadlines require automatic cancellation and are unsupported")
+            if not child or not isinstance(command["deadline"], str):
+                raise ValueError("Only Smart parents manage a child deadline")
+            deadline = datetime.fromisoformat(command["deadline"].replace("Z", "+00:00"))
+            if deadline.utcoffset() is None or deadline.timestamp() <= time.time():
+                raise ValueError("Smart child deadline expired or has no timezone")

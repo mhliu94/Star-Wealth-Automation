@@ -166,7 +166,7 @@ class Client:
         return self.read("detail", {**self.account_params(), "orderId": str(order_id),
             "orderSubAccountId": self.state["account"]["subAcctId"], "showFee": True})
 
-    def submit(self, order, *, journal, intent_id, live=False, max_notional=None):
+    def submit(self, order, *, journal, intent_id, live=False, max_notional=None, deadline=None):
         if not live:
             return {"dry_run": True, **self.prepare(order, max_notional=max_notional)}
         if max_notional is None:
@@ -175,7 +175,7 @@ class Client:
         journal.assert_new(intent_id)
         plan = self._prepare_live(order, max_notional)
         return self._write("create", plan["params"], journal, intent_id,
-            refresh=lambda: self._prepare_live(order, max_notional)["params"])
+            refresh=lambda: self._prepare_live(order, max_notional)["params"], deadline=deadline)
 
     def _prepare_live(self, order, max_notional):
         for _ in range(2):
@@ -196,9 +196,12 @@ class Client:
         self.auth.validate_trade()
         return self._write("cancel", params, journal, intent_id)
 
-    def _write(self, operation, params, journal, intent_id, refresh=None):
+    def _write(self, operation, params, journal, intent_id, refresh=None, deadline=None):
         rid = journal.reserve(intent_id, operation, params)
         for attempt in range(2):
+            if deadline is not None and time.time() >= deadline:
+                journal.finish(intent_id, "rejected")
+                raise ValueError("Smart child deadline expired before submission")
             try:
                 result = self.transport.call(operation, params, user=self.state["user"],
                                              trade=self.state["trade"], request_id=rid)
