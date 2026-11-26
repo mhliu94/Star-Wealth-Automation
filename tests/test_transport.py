@@ -40,3 +40,28 @@ def test_plain_auth_rejection_is_propagated(state):
     with pytest.raises(BrokerError) as error:
         transport.call("orders",{},user=state["user"],request_id="test")
     assert error.value.code==100034
+
+def test_warm_connection_is_reused_and_failure_does_not_retry_a_write(monkeypatch):
+    import http.client
+    from io import BytesIO
+    from unittest.mock import Mock
+    import pytest
+    from starwealth.transport import Transport, TRADE_HOST
+    class Response(BytesIO):
+        status = 200
+        will_close = False
+        def getheader(self, key, default):
+            return default
+    conn = Mock()
+    conn.getresponse.side_effect = lambda: Response(b"{}")
+    make = Mock(return_value=conn)
+    monkeypatch.setattr(http.client, "HTTPSConnection", make)
+    transport = Transport({})
+    for _ in range(2):
+        assert transport.post(TRADE_HOST,"/test",{},b"{}")[0] == 200
+    assert make.call_count == 1
+    conn.getresponse.side_effect = http.client.RemoteDisconnected("response lost")
+    with pytest.raises(http.client.RemoteDisconnected):
+        transport.post(TRADE_HOST,"/test",{},b"{}")
+    assert conn.request.call_count == 3
+    conn.close.assert_called_once()

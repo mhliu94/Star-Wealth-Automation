@@ -2,6 +2,7 @@ from starwealth import latency
 import http.client
 import json
 import ssl
+import threading
 import time
 import uuid
 from .crypto import TemporarySession, compact, encrypt, decrypt, signature
@@ -33,6 +34,8 @@ class Transport:
     def __init__(self, device, timeout=20):
         self.device = device
         self.timeout = timeout
+        self._tls = ssl.create_default_context()
+        self._local = threading.local()
 
     @latency.timed("broker_request", "call", arg=1)
     def call(self, operation, params, user=None, trade=None, request_id=None):
@@ -106,13 +109,26 @@ class Transport:
         return envelope["result"]
 
     def post(self, host, path, headers, body, method="POST"):
-        connection = http.client.HTTPSConnection(host, timeout=self.timeout, context=ssl.create_default_context())
+        connections = getattr(self._local, "connections", None)
+        if connections is None:
+            connections = self._local.connections = {}
+        connection = connections.get(host)
+        if connection is None:
+            connection = http.client.HTTPSConnection(host, timeout=self.timeout, context=self._tls)
+            connections[host] = connection
         try:
             connection.request(method, path, headers=headers, body=body)
-            response = connection.getresponse()
-            raw = response.read(8 * 1024 * 1024 + 1)
-            if len(raw) > 8 * 1024 * 1024:
-                raise ProtocolError("Broker response exceeds size limit")
-            return response.status, response.getheader("Content-Type", ""), raw
-        finally:
+            with connection.getresponse() as response:
+                raw = response.read(8 * 1024 * 1024 + 1)
+                if len(raw) > 8 * 1024 * 1024:
+                    raise ProtocolError("Broker response exceeds size limit")
+                if getattr(response, "length", None):
+                    raise http.client.IncompleteRead(raw)
+                if response.will_close:
+                    connections.pop(host, None)
+                    connection.close()
+                return response.status, response.getheader("Content-Type", ""), raw
+        except (OSError, http.client.HTTPException, ProtocolError):
+            connections.pop(host, None)
             connection.close()
+            raise

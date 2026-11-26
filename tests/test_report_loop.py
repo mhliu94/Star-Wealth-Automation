@@ -89,7 +89,8 @@ def test_old_gtc_missing_from_active_is_reconciled_by_exact_id(monkeypatch):
     client.order_history.assert_called_once_with(from_date="2000-01-01", statuses=[10, 20, 21, 40, 60])
     assert order.call_args.args[0] == terminal
     reporter.queue_order.assert_called_once_with({"order_id": "old-order", "status": "CANCELED"})
-    reporter.flush.assert_called_once_with(max_records=20)
+    reporter.flush_orders.assert_called_once_with(max_records=20)
+    reporter.flush.assert_called_once_with(max_records=20, only_topic=reporter.account_topic)
 
 
 def test_missing_tracked_order_is_not_inferred_canceled(monkeypatch, caplog):
@@ -100,7 +101,8 @@ def test_missing_tracked_order_is_not_inferred_canceled(monkeypatch, caplog):
     order.assert_not_called()
     reporter.queue_order.assert_not_called()
     assert "retaining its last reported state" in caplog.text
-    reporter.flush.assert_called_once_with(max_records=20)
+    reporter.flush_orders.assert_called_once_with(max_records=20)
+    reporter.flush.assert_called_once_with(max_records=20, only_topic=reporter.account_topic)
 
 
 def test_periodic_reconcile_runs_with_reporting_interval(monkeypatch):
@@ -125,3 +127,11 @@ def test_reconciliation_error_does_not_block_account_reports(monkeypatch, caplog
     reporter.queue_order.assert_called_once()
     reporter.flush.assert_called_once()
     assert "private exception content" not in caplog.text
+
+def test_order_evidence_leaves_before_holdings_round_trips(monkeypatch):
+    loop, _, _, reporter, account, _, _ = configured(monkeypatch)
+    stages = []
+    reporter.flush_orders.side_effect = lambda **kwargs: stages.append("order_delivery")
+    account.side_effect = lambda *args: stages.append("account_reads") or {"cash": 10}
+    loop.tick()
+    assert stages == ["order_delivery","account_reads"]

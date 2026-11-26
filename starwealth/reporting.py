@@ -252,7 +252,10 @@ class Reporter:
         if not reports or any(error is not None for error in reports):
             raise ReportingError("Kafka delivery was not confirmed")
 
-    def flush(self, max_records=None):
+    def flush_orders(self, max_records):
+        return self.flush(max_records=max_records, only_topic=self.order_topic)
+
+    def flush(self, max_records=None, *, only_topic=None):
         """Deliver durable records; a failed order never prevents other entities."""
         if max_records is not None and (type(max_records) is not int or max_records < 1):
             raise ValueError("max_records must be a positive integer or None")
@@ -260,7 +263,8 @@ class Reporter:
         # Keep current balances deliverable even when a large order backlog has
         # a failing stream. Stream rows from SQLite instead of loading payloads.
         rows = self.db.execute("""SELECT id,topic,message_key,payload FROM report_outbox
-            WHERE account=? ORDER BY (topic=?) DESC,id""", (self.account_id, self.account_topic))
+            WHERE account=? AND (? IS NULL OR topic=?) ORDER BY (topic=?) DESC,id""",
+            (self.account_id, only_topic, only_topic, self.account_topic))
         for identifier, topic, key, payload in rows:
             if (topic, key) in blocked:
                 continue

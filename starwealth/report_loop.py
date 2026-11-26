@@ -84,7 +84,14 @@ class ReportLoop:
             if self.order_changes.observe(observations):
                 self.refresh_until = self.clock() + 10
                 self.next_account = 0
-            if force or self.clock() >= self.next_account:
+            account_due = force or self.clock() >= self.next_account
+            if account_due:
+                # Publish freshly observed and previously queued order evidence before the
+                # serial holdings/quote/cash reads can delay the controller's next order.
+                try:
+                    self.reporter.flush_orders(max_records=20)
+                except Exception as exc:
+                    LOG.error("Order publication deferred (%s); durable outbox will retry", type(exc).__name__)
                 try:
                     snapshot = account_snapshot(self.client, self.reporter.account_id,
                         self.reporter.account_num_id, self.enabled())
@@ -94,7 +101,7 @@ class ReportLoop:
                     LOG.error("Account reporting failed (%s); keeping the previous snapshot", type(exc).__name__)
                 self.next_account = self.clock() + (1 if self.clock() < self.refresh_until else min(30, self.interval))
             try:
-                sent = self.reporter.flush(max_records=20)
+                sent = self.reporter.flush(max_records=20, only_topic=self.reporter.account_topic if account_due else None)
                 LOG.info("Reporting account_read=%s orders_read=%s snapshots_delivered=%s elapsed_ms=%.3f",
                          account_ok, order_count, sent, (time.perf_counter_ns()-elapsed_start)/1_000_000)
             except Exception as exc:
