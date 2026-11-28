@@ -13,7 +13,8 @@ def configured(monkeypatch):
     reporter = Mock(account_id="STAR-DONG", account_num_id=24)
     reporter.flush.return_value = 2
     reporter.unresolved_order_ids.return_value = set()
-    account = Mock(return_value={"cash": 10})
+    account = Mock(return_value={"account_id": "STAR-DONG", "cash": 10, "positions": [],
+                                 "trading_enabled": True, "ts": "2026-11-28T00:00:00+00:00"})
     order = Mock(side_effect=lambda *args, **kwargs: {"order_id": "order-1", "cancelable": True})
     monkeypatch.setattr("starwealth.report_loop.account_snapshot", account)
     monkeypatch.setattr("starwealth.report_loop.normalize_order", order)
@@ -113,7 +114,7 @@ def test_periodic_reconcile_runs_with_reporting_interval(monkeypatch):
     now[0] = 1030
     loop.tick()
     assert loop.reconcile.call_count == 2
-    assert reporter.publish_account.call_count == 3
+    assert reporter.publish_account.call_count == 2
     assert reporter.flush.call_count == 3
 
 

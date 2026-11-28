@@ -1,6 +1,8 @@
 """Serialized broker reads and independent Kafka snapshot delivery."""
 from datetime import datetime, timezone
 import logging
+import queue
+from .holdings_timer import HoldingsTimer, PositionProjection
 import threading
 from concurrent.futures import Future
 import time
@@ -20,14 +22,25 @@ class ReportLoop:
         self.next_refresh = 0
         self.next_account = 0
         self.next_reconcile = 0
-        self.refresh_until = 0
-        from .account_delta import OrderChanges
-        self.order_changes = OrderChanges()
+        self.positions = PositionProjection(self.reporter.publish_account)
+        self.checkpoints = queue.SimpleQueue()
+        self.timer = None
+
+    def _read_checkpoint(self):
+        token = self.positions.begin()
+        # The SQLite trading-state reader belongs to the reporting thread.
+        snapshot = account_snapshot(self.client, self.reporter.account_id, self.reporter.account_num_id, True)
+        self.checkpoints.put((token, snapshot))
+
+    def start_timer(self, wake):
+        def tick():
+            self._read_checkpoint()
+            wake.set()
+        self.timer = HoldingsTimer(tick, self.interval)
+        self.timer.start()
 
     def after_command(self):
         self.next_refresh = 0
-        self.next_account = 0
-        self.refresh_until = self.clock() + 10
 
     def tick(self, *, force=False):
         if not force and self.clock() < self.next_refresh:
@@ -81,18 +94,18 @@ class ReportLoop:
                         LOG.error("Order snapshot rejected (%s); no status inferred", type(exc).__name__)
             except Exception as exc:
                 LOG.error("Order reporting read failed (%s)", type(exc).__name__)
-            if self.order_changes.observe(observations):
-                self.refresh_until = self.clock() + 10
-                self.next_account = 0
-            if force or self.clock() >= self.next_account:
-                try:
-                    snapshot = account_snapshot(self.client, self.reporter.account_id,
-                        self.reporter.account_num_id, self.enabled())
-                    self.reporter.publish_account(snapshot)
+            try:
+                self.positions.observe(observations)
+                if self.timer is None and self.clock() >= self.next_account:
+                    self.next_account = self.clock() + self.interval
+                    self._read_checkpoint()
+                while not self.checkpoints.empty():
+                    token, snapshot = self.checkpoints.get_nowait()
+                    snapshot["trading_enabled"] = self.enabled()
+                    self.positions.checkpoint(token, snapshot)
                     account_ok = True
-                except Exception as exc:
-                    LOG.error("Account reporting failed (%s); keeping the previous snapshot", type(exc).__name__)
-                self.next_account = self.clock() + (1 if self.clock() < self.refresh_until else min(30, self.interval))
+            except Exception as exc:
+                LOG.error("Account reporting failed (%s)", type(exc).__name__)
             try:
                 sent = self.reporter.flush(max_records=20)
                 LOG.info("Reporting account_read=%s orders_read=%s snapshots_delivered=%s elapsed_ms=%.3f",
@@ -127,12 +140,16 @@ class BackgroundReports:
     def _run(self):
         try:
             with self.open_loop() as loop:
-                self.ready.set_result(None)
-                while not self.stop.is_set():
-                    loop.tick()
-                    if self.wake.wait(max(0, loop.next_refresh - time.time())):
-                        self.wake.clear()
-                        loop.after_command()
+                loop.start_timer(self.wake)
+                try:
+                    self.ready.set_result(None)
+                    while not self.stop.is_set():
+                        loop.tick()
+                        if self.wake.wait(max(0, loop.next_refresh - time.time())):
+                            self.wake.clear()
+                            loop.after_command()
+                finally:
+                    loop.timer.close()
         except Exception as exc:
             self.stop.set()
             if not self.ready.done():

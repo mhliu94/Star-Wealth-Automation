@@ -150,7 +150,7 @@ class Reporter:
         self.db.execute("INSERT INTO report_outbox(account,topic,message_key,payload) VALUES (?,?,?,?)",
                         (self.account_id, topic, key, serialized))
 
-    def publish_account(self, snapshot):
+    def publish_account(self, snapshot, full=None):
         """Validate and queue an account snapshot; flush performs publication."""
         if not isinstance(snapshot, dict):
             raise ValueError("Account snapshot must be an object")
@@ -184,12 +184,16 @@ class Reporter:
             if "available_qty" in position:
                 number(position["available_qty"], "available_qty", nullable=True, minimum=None)
         result.update(account_id=self.account_id, account_num_id=self.account_num_id)
+        if full is not None:
+            result["_timer_checkpoint"] = bool(full)
         with self.db:
             pending = self.db.execute("SELECT payload FROM report_outbox WHERE account=? AND topic=? AND message_key=?",
                                       (self.account_id, self.account_topic, self.account_id)).fetchall()
             if any(datetime.fromisoformat(json.loads(row[0])["ts"]) > datetime.fromisoformat(result["ts"])
                    for row in pending):
                 raise ValueError("Pending account snapshot is newer than this observation")
+            if any(json.loads(row[0]).get("_timer_checkpoint") is True for row in pending):
+                result["_timer_checkpoint"] = True
             # Account snapshots replace the full current balance/position state.
             # Keep only the latest during outages; order sequence events are retained.
             self.db.execute("DELETE FROM report_outbox WHERE account=? AND topic=? AND message_key=?",
@@ -238,8 +242,11 @@ class Reporter:
         from .account_delta import AccountDeltaPublisher
         if not hasattr(self, '_account_deltas'):
             self._account_deltas = AccountDeltaPublisher()
-        return self._account_deltas.publish(json.loads(payload),
-            lambda event: self._deliver_raw(topic, self.account_id, encoded(event)))
+        state = json.loads(payload)
+        full = state.pop("_timer_checkpoint", None)
+        return self._account_deltas.publish(state,
+            lambda event: self._deliver_raw(topic, self.account_id, encoded(event)),
+            force=bool(full), automatic_checkpoint=full is None)
 
     @latency.timed("report_delivery", "kafka", arg=1, payload=3)
     def _deliver_raw(self, topic, key, payload):
